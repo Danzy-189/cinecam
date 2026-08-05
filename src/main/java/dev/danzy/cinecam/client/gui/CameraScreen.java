@@ -5,6 +5,7 @@ import dev.danzy.cinecam.client.CameraMode;
 import dev.danzy.cinecam.client.CameraSettings;
 import dev.danzy.cinecam.client.CineCamKeys;
 import java.util.EnumMap;
+import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import net.minecraft.ChatFormatting;
@@ -13,12 +14,16 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
+import net.minecraft.util.FormattedCharSequence;
 
 /** Camera settings screen. Does not pause the game, so the shot stays live. */
 public class CameraScreen extends Screen {
-    private static final int PANEL_WIDTH = 330;
+    private static final int PANEL_WIDTH = 460;
     private static final int PANEL_HEIGHT = 256;
-    private static final int COLUMN_WIDTH = 150;
+    private static final int COLUMN_WIDTH = 140;
+    private static final int COLUMN_ONE = 10;
+    private static final int COLUMN_TWO = 160;
+    private static final int COLUMN_THREE = 310;
 
     private final Map<CameraMode, Button> modeButtons = new EnumMap<>(CameraMode.class);
     private int left;
@@ -32,10 +37,11 @@ public class CameraScreen extends Screen {
     protected void init() {
         this.modeButtons.clear();
         CameraSettings settings = CameraController.get().settings;
-        this.left = (this.width - PANEL_WIDTH) / 2;
+        this.left = Math.max(4, (this.width - PANEL_WIDTH) / 2);
         this.top = Math.max(4, (this.height - PANEL_HEIGHT) / 2);
-        int columnLeft = this.left + 10;
-        int columnRight = this.left + 170;
+        int columnLeft = this.left + COLUMN_ONE;
+        int columnRight = this.left + COLUMN_TWO;
+        int columnFollow = this.left + COLUMN_THREE;
 
         int modeY = this.top + 46;
         for (CameraMode mode : CameraMode.values()) {
@@ -87,13 +93,29 @@ public class CameraScreen extends Screen {
         this.addRenderableWidget(new CineSlider(columnRight, sliderY, COLUMN_WIDTH, 18, "cinecam.opt.orbit_speed",
                 -60.0D, 60.0D, settings.orbitSpeed, 1.0D, "%.0f", value -> settings.orbitSpeed = value));
 
+        int followY = this.top + 46;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_distance",
+                0.5D, 16.0D, settings.followDistance, 1.0D, "%.1f", value -> settings.followDistance = value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_pitch",
+                -45.0D, 70.0D, settings.followPitch, 1.0D, "%.0f", value -> settings.followPitch = (float) value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_shoulder",
+                -2.0D, 2.0D, settings.followShoulder, 1.0D, "%.2f", value -> settings.followShoulder = value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_align",
+                0.0D, 1.0D, settings.followAlign, 100.0D, "%.0f%%", value -> settings.followAlign = (float) value));
+        followY += 20;
+        this.addRenderableWidget(this.toggle(columnFollow, followY, "cinecam.opt.follow_collision",
+                () -> settings.followCollision, () -> settings.followCollision = !settings.followCollision));
+
         int footerY = this.top + 226;
         this.addRenderableWidget(Button.builder(Component.translatable("cinecam.screen.reset"), pressed -> {
             CameraController.get().settings.resetDefaults();
             this.rebuildWidgets();
         }).bounds(columnLeft, footerY, COLUMN_WIDTH, 20).build());
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, pressed -> this.onClose())
-                .bounds(columnRight, footerY, COLUMN_WIDTH, 20).build());
+                .bounds(columnFollow, footerY, COLUMN_WIDTH, 20).build());
     }
 
     private Button toggle(int x, int y, String key, BooleanSupplier getter, Runnable toggler) {
@@ -121,16 +143,26 @@ public class CameraScreen extends Screen {
         graphics.fillGradient(0, 0, this.width, this.height, Theme.SCREEN_DIM_TOP, Theme.SCREEN_DIM_BOTTOM);
         Theme.panel(graphics, this.left, this.top, PANEL_WIDTH, PANEL_HEIGHT);
         super.render(graphics, mouseX, mouseY, partialTick);
-        graphics.drawString(this.font, this.title, this.left + 10, this.top + 9, Theme.ACCENT, false);
+        graphics.drawString(this.font, this.title, this.left + COLUMN_ONE, this.top + 9, Theme.ACCENT, false);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.subtitle"),
-                this.left + 10, this.top + 21, Theme.TEXT_DIM, false);
-        graphics.fill(this.left + 10, this.top + 33, this.left + PANEL_WIDTH - 10, this.top + 34, Theme.BORDER);
+                this.left + COLUMN_ONE, this.top + 21, Theme.TEXT_DIM, false);
+        graphics.fill(this.left + COLUMN_ONE, this.top + 33, this.left + PANEL_WIDTH - 10, this.top + 34, Theme.BORDER);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.section.modes"),
-                this.left + 10, this.top + 37, Theme.TEXT_DIM, false);
+                this.left + COLUMN_ONE, this.top + 37, Theme.TEXT_DIM, false);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.section.controls"),
-                this.left + 170, this.top + 37, Theme.TEXT_DIM, false);
+                this.left + COLUMN_TWO, this.top + 37, Theme.TEXT_DIM, false);
+        graphics.drawString(this.font, Component.translatable("cinecam.screen.section.follow"),
+                this.left + COLUMN_THREE, this.top + 37, Theme.ACCENT, false);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.section.frame"),
-                this.left + 10, this.top + 130, Theme.TEXT_DIM, false);
+                this.left + COLUMN_ONE, this.top + 130, Theme.TEXT_DIM, false);
+
+        List<FormattedCharSequence> hint = this.font.split(
+                Component.translatable("cinecam.screen.hint.follow"), COLUMN_WIDTH);
+        int hintY = this.top + 152;
+        for (FormattedCharSequence line : hint) {
+            graphics.drawString(this.font, line, this.left + COLUMN_THREE, hintY, Theme.TEXT_DIM, false);
+            hintY += 10;
+        }
     }
 
     @Override
