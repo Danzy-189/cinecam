@@ -2,6 +2,7 @@ package dev.danzy.cinecam.client;
 
 import dev.danzy.cinecam.client.gui.CameraHudLayer;
 import dev.danzy.cinecam.client.gui.CameraScreen;
+import dev.danzy.cinecam.client.gui.PathScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.Input;
 import net.minecraft.client.player.LocalPlayer;
@@ -11,6 +12,7 @@ import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.event.MovementInputUpdateEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
+import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 import net.neoforged.neoforge.client.gui.VanillaGuiLayers;
 
@@ -52,6 +54,20 @@ public final class ClientEvents {
         while (CineCamKeys.GRID.consumeClick()) {
             controller.toggleGrid();
         }
+        while (CineCamKeys.TARGET.consumeClick()) {
+            controller.pickTarget();
+        }
+        while (CineCamKeys.KEYFRAME.consumeClick()) {
+            controller.captureKeyframe();
+        }
+        while (CineCamKeys.PLAY.consumeClick()) {
+            controller.togglePlayback();
+        }
+        while (CineCamKeys.PATHS.consumeClick()) {
+            if (minecraft.screen == null) {
+                minecraft.setScreen(new PathScreen());
+            }
+        }
         while (CineCamKeys.MENU.consumeClick()) {
             if (minecraft.screen == null) {
                 minecraft.setScreen(new CameraScreen());
@@ -90,9 +106,15 @@ public final class ClientEvents {
     @SubscribeEvent
     public static void onComputeFov(ViewportEvent.ComputeFov event) {
         CameraController controller = CameraController.get();
-        if (controller.isActive() && controller.settings.customFov) {
+        // A path carries its own field of view, so it overrides the setting while it plays.
+        if (controller.isActive() && (controller.settings.customFov || controller.isPlayingPath())) {
             event.setFOV(controller.currentFov());
         }
+    }
+
+    @SubscribeEvent
+    public static void onRenderLevel(RenderLevelStageEvent event) {
+        PathRenderer.render(event);
     }
 
     /**
