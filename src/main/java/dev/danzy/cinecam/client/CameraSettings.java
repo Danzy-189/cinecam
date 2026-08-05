@@ -32,20 +32,28 @@ public class CameraSettings {
     public double orbitHeight = 2.0D;
     /** Degrees per second. */
     public double orbitSpeed = 12.0D;
-    /** Aim point height above the player's feet. */
+    /** Aim point height above the subject's feet, scaled by how tall the subject is. */
     public double aimHeight = 1.4D;
 
     // Third person follow camera.
-    /** Length of the spring arm behind the player. */
+    /** Length of the spring arm behind the subject. */
     public double followDistance = 4.5D;
     /** Resting elevation of the arm, in degrees below the horizon. */
     public float followPitch = 18.0F;
     /** Sideways offset for an over the shoulder frame. */
     public double followShoulder = 0.0D;
-    /** 0 = the camera never swings behind the player, 1 = it snaps there. */
+    /** 0 = the camera never swings behind the subject, 1 = it snaps there. */
     public float followAlign = 0.35F;
     /** Pull the camera in instead of letting it clip into blocks. */
     public boolean followCollision = true;
+
+    // Camera paths.
+    /** Draw the spline and its keyframes in the world while editing. */
+    public boolean pathGuides = true;
+    /** Seconds assigned to a freshly captured keyframe. */
+    public double pathDefaultDuration = 2.0D;
+    /** Playback rate multiplier: 0.5 is slow motion, 2 is double speed. */
+    public double pathSpeed = 1.0D;
 
     public void resetDefaults() {
         this.moveSpeed = 0.35D;
@@ -66,6 +74,9 @@ public class CameraSettings {
         this.followShoulder = 0.0D;
         this.followAlign = 0.35F;
         this.followCollision = true;
+        this.pathGuides = true;
+        this.pathDefaultDuration = 2.0D;
+        this.pathSpeed = 1.0D;
         this.save();
     }
 
@@ -83,6 +94,8 @@ public class CameraSettings {
         this.followPitch = Mth.clamp(this.followPitch, -80.0F, 80.0F);
         this.followShoulder = Mth.clamp(this.followShoulder, -3.0D, 3.0D);
         this.followAlign = Mth.clamp(this.followAlign, 0.0F, 1.0F);
+        this.pathDefaultDuration = Mth.clamp(this.pathDefaultDuration, 0.1D, 30.0D);
+        this.pathSpeed = Mth.clamp(this.pathSpeed, 0.1D, 4.0D);
     }
 
     public void load() {
@@ -115,6 +128,9 @@ public class CameraSettings {
         this.followShoulder = readDouble(properties, "followShoulder", this.followShoulder);
         this.followAlign = (float) readDouble(properties, "followAlign", this.followAlign);
         this.followCollision = readBoolean(properties, "followCollision", this.followCollision);
+        this.pathGuides = readBoolean(properties, "pathGuides", this.pathGuides);
+        this.pathDefaultDuration = readDouble(properties, "pathDefaultDuration", this.pathDefaultDuration);
+        this.pathSpeed = readDouble(properties, "pathSpeed", this.pathSpeed);
         this.clampAll();
     }
 
@@ -139,6 +155,9 @@ public class CameraSettings {
         properties.setProperty("followShoulder", Double.toString(this.followShoulder));
         properties.setProperty("followAlign", Float.toString(this.followAlign));
         properties.setProperty("followCollision", Boolean.toString(this.followCollision));
+        properties.setProperty("pathGuides", Boolean.toString(this.pathGuides));
+        properties.setProperty("pathDefaultDuration", Double.toString(this.pathDefaultDuration));
+        properties.setProperty("pathSpeed", Double.toString(this.pathSpeed));
         Path path = file();
         try {
             Path parent = path.getParent();
