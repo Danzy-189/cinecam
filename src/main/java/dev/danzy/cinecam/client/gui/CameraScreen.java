@@ -5,7 +5,6 @@ import dev.danzy.cinecam.client.CameraMode;
 import dev.danzy.cinecam.client.CameraSettings;
 import dev.danzy.cinecam.client.CineCamKeys;
 import java.util.EnumMap;
-import java.util.List;
 import java.util.Map;
 import java.util.function.BooleanSupplier;
 import net.minecraft.ChatFormatting;
@@ -14,7 +13,6 @@ import net.minecraft.client.gui.components.Button;
 import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
-import net.minecraft.util.FormattedCharSequence;
 
 /** Camera settings screen. Does not pause the game, so the shot stays live. */
 public class CameraScreen extends Screen {
@@ -103,8 +101,20 @@ public class CameraScreen extends Screen {
         this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_shoulder",
                 -2.0D, 2.0D, settings.followShoulder, 1.0D, "%.2f", value -> settings.followShoulder = value));
         followY += 20;
-        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_align",
-                0.0D, 1.0D, settings.followAlign, 100.0D, "%.0f%%", value -> settings.followAlign = (float) value));
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_stiffness",
+                0.0D, 1.0D, settings.followStiffness, 100.0D, "%.0f%%",
+                value -> settings.followStiffness = (float) value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_recenter",
+                0.0D, 1.0D, settings.followRecenter, 100.0D, "%.0f%%",
+                value -> settings.followRecenter = (float) value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18, "cinecam.opt.follow_ahead",
+                0.0D, 4.0D, settings.followLookAhead, 1.0D, "%.1f", value -> settings.followLookAhead = value));
+        followY += 20;
+        this.addRenderableWidget(new CineSlider(columnFollow, followY, COLUMN_WIDTH, 18,
+                "cinecam.opt.follow_sensitivity", 0.2D, 3.0D, settings.followSensitivity, 100.0D, "%.0f%%",
+                value -> settings.followSensitivity = value));
         followY += 20;
         this.addRenderableWidget(this.toggle(columnFollow, followY, "cinecam.opt.follow_collision",
                 () -> settings.followCollision, () -> settings.followCollision = !settings.followCollision));
@@ -166,14 +176,8 @@ public class CameraScreen extends Screen {
                 this.left + COLUMN_THREE, this.top + 37, Theme.ACCENT, false);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.section.frame"),
                 this.left + COLUMN_ONE, this.top + 130, Theme.TEXT_DIM, false);
-
-        List<FormattedCharSequence> hint = this.font.split(
-                Component.translatable("cinecam.screen.hint.follow"), COLUMN_WIDTH);
-        int hintY = this.top + 152;
-        for (FormattedCharSequence line : hint) {
-            graphics.drawString(this.font, line, this.left + COLUMN_THREE, hintY, Theme.TEXT_DIM, false);
-            hintY += 10;
-        }
+        graphics.drawString(this.font, Component.translatable("cinecam.screen.hint.follow"),
+                this.left + COLUMN_THREE, this.top + 208, Theme.TEXT_DIM, false);
     }
 
     @Override

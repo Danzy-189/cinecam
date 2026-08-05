@@ -35,15 +35,21 @@ public class CameraSettings {
     /** Aim point height above the subject's feet, scaled by how tall the subject is. */
     public double aimHeight = 1.4D;
 
-    // Third person follow camera.
+    // Third person chase camera.
     /** Length of the spring arm behind the subject. */
     public double followDistance = 4.5D;
     /** Resting elevation of the arm, in degrees below the horizon. */
     public float followPitch = 18.0F;
     /** Sideways offset for an over the shoulder frame. */
     public double followShoulder = 0.0D;
-    /** 0 = the camera never swings behind the subject, 1 = it snaps there. */
-    public float followAlign = 0.35F;
+    /** How hard the rig is bolted behind the subject: 0 = free, 1 = perfectly rigid. */
+    public float followStiffness = 0.80F;
+    /** How briskly a manual orbit straightens up again. 0 keeps the framing you set. */
+    public float followRecenter = 0.35F;
+    /** Blocks the pivot slides forward at full speed, to show more of the road ahead. */
+    public double followLookAhead = 1.0D;
+    /** Multiplier on top of the game's mouse sensitivity while orbiting. */
+    public double followSensitivity = 1.0D;
     /** Pull the camera in instead of letting it clip into blocks. */
     public boolean followCollision = true;
 
@@ -72,7 +78,10 @@ public class CameraSettings {
         this.followDistance = 4.5D;
         this.followPitch = 18.0F;
         this.followShoulder = 0.0D;
-        this.followAlign = 0.35F;
+        this.followStiffness = 0.80F;
+        this.followRecenter = 0.35F;
+        this.followLookAhead = 1.0D;
+        this.followSensitivity = 1.0D;
         this.followCollision = true;
         this.pathGuides = true;
         this.pathDefaultDuration = 2.0D;
@@ -93,7 +102,10 @@ public class CameraSettings {
         this.followDistance = Mth.clamp(this.followDistance, 0.5D, 24.0D);
         this.followPitch = Mth.clamp(this.followPitch, -80.0F, 80.0F);
         this.followShoulder = Mth.clamp(this.followShoulder, -3.0D, 3.0D);
-        this.followAlign = Mth.clamp(this.followAlign, 0.0F, 1.0F);
+        this.followStiffness = Mth.clamp(this.followStiffness, 0.0F, 1.0F);
+        this.followRecenter = Mth.clamp(this.followRecenter, 0.0F, 1.0F);
+        this.followLookAhead = Mth.clamp(this.followLookAhead, 0.0D, 4.0D);
+        this.followSensitivity = Mth.clamp(this.followSensitivity, 0.1D, 4.0D);
         this.pathDefaultDuration = Mth.clamp(this.pathDefaultDuration, 0.1D, 30.0D);
         this.pathSpeed = Mth.clamp(this.pathSpeed, 0.1D, 4.0D);
     }
@@ -126,7 +138,10 @@ public class CameraSettings {
         this.followDistance = readDouble(properties, "followDistance", this.followDistance);
         this.followPitch = (float) readDouble(properties, "followPitch", this.followPitch);
         this.followShoulder = readDouble(properties, "followShoulder", this.followShoulder);
-        this.followAlign = (float) readDouble(properties, "followAlign", this.followAlign);
+        this.followStiffness = (float) readDouble(properties, "followStiffness", this.followStiffness);
+        this.followRecenter = (float) readDouble(properties, "followRecenter", this.followRecenter);
+        this.followLookAhead = readDouble(properties, "followLookAhead", this.followLookAhead);
+        this.followSensitivity = readDouble(properties, "followSensitivity", this.followSensitivity);
         this.followCollision = readBoolean(properties, "followCollision", this.followCollision);
         this.pathGuides = readBoolean(properties, "pathGuides", this.pathGuides);
         this.pathDefaultDuration = readDouble(properties, "pathDefaultDuration", this.pathDefaultDuration);
@@ -153,7 +168,10 @@ public class CameraSettings {
         properties.setProperty("followDistance", Double.toString(this.followDistance));
         properties.setProperty("followPitch", Float.toString(this.followPitch));
         properties.setProperty("followShoulder", Double.toString(this.followShoulder));
-        properties.setProperty("followAlign", Float.toString(this.followAlign));
+        properties.setProperty("followStiffness", Float.toString(this.followStiffness));
+        properties.setProperty("followRecenter", Float.toString(this.followRecenter));
+        properties.setProperty("followLookAhead", Double.toString(this.followLookAhead));
+        properties.setProperty("followSensitivity", Double.toString(this.followSensitivity));
         properties.setProperty("followCollision", Boolean.toString(this.followCollision));
         properties.setProperty("pathGuides", Boolean.toString(this.pathGuides));
         properties.setProperty("pathDefaultDuration", Double.toString(this.pathDefaultDuration));

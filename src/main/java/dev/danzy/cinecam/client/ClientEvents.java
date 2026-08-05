@@ -3,6 +3,7 @@ package dev.danzy.cinecam.client;
 import dev.danzy.cinecam.client.gui.CameraHudLayer;
 import dev.danzy.cinecam.client.gui.CameraScreen;
 import dev.danzy.cinecam.client.gui.PathScreen;
+import net.minecraft.client.DeltaTracker;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.Input;
 import net.minecraft.client.player.LocalPlayer;
@@ -11,6 +12,7 @@ import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
 import net.neoforged.neoforge.client.event.MovementInputUpdateEvent;
+import net.neoforged.neoforge.client.event.RenderFrameEvent;
 import net.neoforged.neoforge.client.event.RenderGuiLayerEvent;
 import net.neoforged.neoforge.client.event.RenderLevelStageEvent;
 import net.neoforged.neoforge.client.event.ViewportEvent;
@@ -28,6 +30,23 @@ public final class ClientEvents {
     public static void onClientTickPost(ClientTickEvent.Post event) {
         handleKeys();
         CameraController.get().tick();
+    }
+
+    /**
+     * Solves the chase rig once per frame, before anything is rendered.
+     *
+     * <p>Fires ahead of {@code GameRenderer#render}, and therefore ahead of
+     * {@code Camera#setup}, which is what lets the camera entity be handed a pose that is
+     * exact for this frame instead of one interpolated between two ticks.
+     */
+    @SubscribeEvent
+    public static void onRenderFrame(RenderFrameEvent.Pre event) {
+        CameraController controller = CameraController.get();
+        if (!controller.isActive()) {
+            return;
+        }
+        DeltaTracker tracker = event.getPartialTick();
+        controller.updateFrame(tracker.getGameTimeDeltaPartialTick(false), tracker.getGameTimeDeltaTicks());
     }
 
     private static void handleKeys() {

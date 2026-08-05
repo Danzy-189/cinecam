@@ -12,6 +12,7 @@ import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
+import net.minecraft.world.entity.LivingEntity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
@@ -24,10 +25,12 @@ import net.neoforged.neoforge.client.event.ViewportEvent;
 public class CameraController {
     private static final CameraController INSTANCE = new CameraController();
 
-    /** Ticks the follow camera waits after a manual orbit before it aligns again. */
-    private static final int MANUAL_HOLD = 30;
+    /** Ticks the chase camera waits after a manual orbit before it straightens up again. */
+    private static final int MANUAL_HOLD = 12;
     /** How far the target picker reaches. */
     private static final double PICK_RANGE = 128.0D;
+    /** Horizontal speed treated as full throttle by the rig, in blocks per tick. */
+    private static final double FULL_SPEED = 0.216D;
 
     public final CameraSettings settings = new CameraSettings();
 
@@ -49,12 +52,22 @@ public class CameraController {
     private Vec3 subjectMotion = Vec3.ZERO;
     private Vec3 subjectLastPos;
 
-    /** Third person rig: orbit angles, smoothed arm length and smoothed pivot height. */
-    private float followYaw;
-    private float followPitch;
+    // Third person chase rig.
+    /** Heading the rig is locked to: the subject's own facing, damped by the stiffness. */
+    private float rigYaw;
+    /** Manual yaw offset away from dead centre behind the subject. Recentres to zero. */
+    private float orbitYaw;
+    /** Manual pitch offset away from the resting rig pitch. Recentres to zero. */
+    private float orbitPitch;
+    /** Smoothed arm length, smoothed pivot height and smoothed forward lead. */
     private double followArm;
     private double followPivotY;
+    private double followLead;
+    /** Smoothed 0..1 throttle factor and its signed counterpart (negative when reversing). */
+    private double driveSmooth;
+    private double driveSigned;
     private int followManual;
+    private boolean followReady;
 
     /** Field of view dictated by the path while it plays, or -1. */
     private double playbackFov = -1.0D;
@@ -191,6 +204,7 @@ public class CameraController {
         this.active = false;
         this.cameraControl = false;
         this.uiHidden = false;
+        this.followReady = false;
         this.camera = null;
         this.velocity = Vec3.ZERO;
         if (player != null) {
@@ -211,6 +225,7 @@ public class CameraController {
         this.active = false;
         this.cameraControl = false;
         this.uiHidden = false;
+        this.followReady = false;
         this.camera = null;
         this.velocity = Vec3.ZERO;
         this.target.clear();
@@ -254,7 +269,8 @@ public class CameraController {
         this.anchorToSubject(subject);
         this.velocity = Vec3.ZERO;
         if (newMode == CameraMode.FOLLOW) {
-            // Adopt whatever framing the camera already has so the switch does not jump.
+            // Adopt whatever framing the camera already has so the switch does not jump,
+            // then let the auto centre walk it back behind the subject.
             this.adoptFollowRig(subject);
         }
         message(player, Component.translatable("cinecam.msg.mode", newMode.title()));
@@ -276,6 +292,12 @@ public class CameraController {
             return;
         }
         Entity subject = this.target.resolve(player);
+        if (this.mode == CameraMode.FOLLOW) {
+            // In a chase rig recentering means "snap straight behind the back", not
+            // "teleport onto the player".
+            this.resetFollowRig(subject);
+            return;
+        }
         this.position = player.getEyePosition(1.0F);
         this.prevPosition = this.position;
         this.velocity = Vec3.ZERO;
@@ -390,6 +412,8 @@ public class CameraController {
     private void onTargetChanged(LocalPlayer player) {
         this.subjectLastPos = null;
         this.subjectMotion = Vec3.ZERO;
+        this.driveSmooth = 0.0D;
+        this.driveSigned = 0.0D;
         if (!this.active) {
             return;
         }
@@ -680,6 +704,8 @@ public class CameraController {
 
         this.aimPoint = this.aimPointOf(subject);
 
+        float rotAlpha = (float) Math.max(0.05D, 1.0D - smoothing);
+
         switch (this.mode) {
             case FREE:
             case TRACK:
@@ -687,8 +713,11 @@ public class CameraController {
                 break;
             case FOLLOW: {
                 this.velocity = Vec3.ZERO;
-                this.updateFollow(minecraft.level, subject, acceptInput, forward, strafe, vertical, speed, chaseAlpha);
-                break;
+                this.tickFollow(subject, acceptInput, forward, strafe, vertical, speed);
+                // The chase rig itself is rebuilt frame by frame in updateFrame(), so the
+                // tick only advances the roll and leaves the pose alone.
+                this.roll += (this.settings.roll - this.roll) * rotAlpha;
+                return;
             }
             case ORBIT: {
                 this.velocity = Vec3.ZERO;
@@ -716,7 +745,6 @@ public class CameraController {
                 break;
         }
 
-        float rotAlpha = (float) Math.max(0.05D, 1.0D - smoothing);
         if (this.mode.autoAim()) {
             Vec3 aim = this.aimPoint.subtract(this.position);
             double horizontal = Math.sqrt(aim.x * aim.x + aim.z * aim.z);
@@ -755,11 +783,33 @@ public class CameraController {
     }
 
     /**
+     * The heading the chase camera hides behind.
+     *
+     * <p>For the local player that is the look direction, because that is what steering
+     * actually is in Minecraft. For everything else it is the body rotation, which does not
+     * twitch when a mob glances sideways. Entities that carry no meaningful rotation of their
+     * own, such as a lit stick of TNT, fall back to the direction they are travelling in.
+     */
+    private float subjectFacing(Entity subject) {
+        if (subject == Minecraft.getInstance().player) {
+            return Mth.wrapDegrees(subject.getYRot());
+        }
+        if (subject instanceof LivingEntity living) {
+            return Mth.wrapDegrees(living.yBodyRot);
+        }
+        if (this.subjectMotion.horizontalDistanceSqr() > 2.5E-3D) {
+            return (float) Mth.wrapDegrees(
+                    Math.toDegrees(Math.atan2(-this.subjectMotion.x, this.subjectMotion.z)));
+        }
+        return Mth.wrapDegrees(subject.getYRot());
+    }
+
+    /**
      * Measures how far the subject travelled this tick.
      *
      * <p>{@code getDeltaMovement} is only meaningful for the local player: remote entities are
      * interpolated towards packet positions and usually report zero, which would stop the
-     * follow camera from ever swinging behind a mob or a boat.
+     * follow camera from ever reacting to a mob or a boat.
      */
     private void trackSubjectMotion(Entity subject) {
         Vec3 now = subject.position();
@@ -774,73 +824,190 @@ public class CameraController {
     }
 
     // ------------------------------------------------------------------
-    // Third person follow rig
+    // Third person chase rig
     // ------------------------------------------------------------------
 
     /**
-     * A spring arm anchored to the subject instead of a fixed world offset. The arm keeps its
-     * own orbit angles, drifts back behind the subject while it moves, is pulled in by blocks
-     * and damps the vertical motion so jumps and stairs do not shake the frame.
+     * Tick half of the chase rig: keyboard input, the manual hold timer and the throttle
+     * factor that drives both the look ahead and how briskly the camera straightens up.
      */
-    private void updateFollow(ClientLevel level, Entity subject, boolean acceptInput,
-            double forward, double strafe, double vertical, double speed, double chaseAlpha) {
+    private void tickFollow(Entity subject, boolean acceptInput,
+            double forward, double strafe, double vertical, double speed) {
         CameraSettings config = this.settings;
+        if (!this.followReady) {
+            this.resetFollowRig(subject);
+        }
 
         if (acceptInput) {
             if (forward != 0.0D) {
                 config.followDistance = Mth.clamp(config.followDistance - forward * speed, 0.5D, 24.0D);
             }
             if (strafe != 0.0D) {
-                this.followYaw = Mth.wrapDegrees(this.followYaw - (float) (strafe * 2.5D));
+                this.orbitYaw = Mth.wrapDegrees(this.orbitYaw - (float) (strafe * 2.5D));
                 this.followManual = MANUAL_HOLD;
             }
             if (vertical != 0.0D) {
-                this.followPitch = Mth.clamp(this.followPitch - (float) (vertical * 1.5D), -80.0F, 80.0F);
-                config.followPitch = this.followPitch;
-                this.followManual = MANUAL_HOLD;
+                // The keys move the resting height of the rig, the mouse only borrows it.
+                config.followPitch = Mth.clamp(config.followPitch - (float) (vertical * 1.5D), -80.0F, 80.0F);
             }
         }
 
         if (this.followManual > 0) {
             this.followManual--;
-        } else if (config.followAlign > 0.0F) {
-            // Swing behind the subject, faster the faster it moves. This is what makes the
-            // camera turn with the character instead of sliding sideways next to them.
-            double motion = Math.sqrt(this.subjectMotion.horizontalDistanceSqr());
-            double drive = Mth.clamp(motion / 0.12D, 0.0D, 1.0D);
-            float alpha = (float) (config.followAlign * 0.30D * (0.20D + 0.80D * drive));
-            this.followYaw = approachAngle(this.followYaw, Mth.wrapDegrees(subject.getYRot()), alpha);
-            this.followPitch += (config.followPitch - this.followPitch) * alpha * 0.5F;
         }
 
-        double targetPivotY = subject.getY() + this.aimHeightFor(subject);
-        double pivotDelta = targetPivotY - this.followPivotY;
-        if (Math.abs(pivotDelta) > 4.0D) {
-            this.followPivotY = targetPivotY;
+        double motion = Math.sqrt(this.subjectMotion.horizontalDistanceSqr());
+        double drive = Mth.clamp(motion / FULL_SPEED, 0.0D, 1.0D);
+        this.driveSmooth += (drive - this.driveSmooth) * 0.12D;
+
+        // Signed throttle: reversing pulls the pivot slightly back instead of forward.
+        Vec3 facing = Vec3.directionFromRotation(0.0F, this.rigYaw);
+        double along = this.subjectMotion.x * facing.x + this.subjectMotion.z * facing.z;
+        this.driveSigned = Mth.clamp(along / FULL_SPEED, -0.4D, 1.0D);
+    }
+
+    /**
+     * Frame half of the chase rig.
+     *
+     * <p>Everything that the eye can see is rebuilt here rather than in the tick: at 20 ticks
+     * a second a rig that only moves on tick boundaries feels like dragging the view through
+     * treacle, which is exactly what a third person camera must not do. The pose is written
+     * straight into the camera entity with the previous position set equal to the current one,
+     * so {@code Camera#setup} interpolates onto precisely this pose no matter what partial
+     * tick it is handed.
+     */
+    public void updateFrame(float partialTick, float frameTicks) {
+        if (!this.active || this.camera == null || this.mode != CameraMode.FOLLOW) {
+            return;
+        }
+        Minecraft minecraft = Minecraft.getInstance();
+        LocalPlayer player = minecraft.player;
+        if (player == null || minecraft.level == null || PathManager.get().isPlaying()) {
+            return;
+        }
+
+        this.consumeMouse(player);
+
+        Entity subject = this.target.resolve(player);
+        if (!this.followReady) {
+            this.resetFollowRig(subject);
+        }
+
+        float partial = Mth.clamp(partialTick, 0.0F, 1.0F);
+        float step = Mth.clamp(frameTicks, 0.0F, 5.0F);
+        CameraSettings config = this.settings;
+
+        // 1. Lock the rig onto the subject's heading. This is the whole point of the fix:
+        // it no longer waits for the subject to be moving, so turning on the spot turns
+        // the camera with the back.
+        float facing = this.subjectFacing(subject);
+        float stiffness = Mth.clamp(config.followStiffness, 0.0F, 1.0F);
+        if (stiffness >= 0.999F) {
+            this.rigYaw = facing;
+        } else if (stiffness > 0.0F) {
+            this.rigYaw = approachAngle(this.rigYaw, facing,
+                    frameAlpha(0.06F + 0.94F * stiffness * stiffness, step));
+        }
+
+        // 2. Straighten up after a manual orbit, briskly at speed and lazily at a standstill.
+        if (this.followManual <= 0 && config.followRecenter > 0.0F) {
+            float rate = frameAlpha(
+                    (float) (config.followRecenter * (0.02D + 0.28D * this.driveSmooth)), step);
+            this.orbitYaw -= this.orbitYaw * rate;
+            this.orbitPitch -= this.orbitPitch * rate * 0.5F;
+            if (Math.abs(this.orbitYaw) < 0.05F) {
+                this.orbitYaw = 0.0F;
+            }
+        }
+
+        // 3. Pivot: the subject's interpolated position with a damped height, so stairs and
+        // jumps do not shake the frame.
+        double subjectX = Mth.lerp((double) partial, subject.xo, subject.getX());
+        double subjectY = Mth.lerp((double) partial, subject.yo, subject.getY());
+        double subjectZ = Mth.lerp((double) partial, subject.zo, subject.getZ());
+        double wantedPivotY = subjectY + this.aimHeightFor(subject);
+        if (Math.abs(wantedPivotY - this.followPivotY) > 4.0D) {
+            this.followPivotY = wantedPivotY;
         } else {
-            this.followPivotY += pivotDelta * (subject.onGround() ? 0.5D : 0.18D);
+            this.followPivotY += (wantedPivotY - this.followPivotY)
+                    * frameAlpha(subject.onGround() ? 0.55F : 0.20F, step);
         }
 
-        Vec3 look = Vec3.directionFromRotation(this.followPitch, this.followYaw);
-        Vec3 side = Vec3.directionFromRotation(0.0F, this.followYaw + 90.0F);
-        Vec3 anchor = new Vec3(subject.getX(), this.followPivotY, subject.getZ())
-                .add(side.scale(config.followShoulder));
+        // 4. Look ahead: at speed the pivot slides forward so more of the road is on screen.
+        double wantedLead = config.followLookAhead * this.driveSigned;
+        this.followLead += (wantedLead - this.followLead) * frameAlpha(0.09F, step);
 
+        float yawTotal = Mth.wrapDegrees(this.rigYaw + this.orbitYaw);
+        float pitchTotal = Mth.clamp(config.followPitch + this.orbitPitch, -85.0F, 85.0F);
+        Vec3 look = Vec3.directionFromRotation(pitchTotal, yawTotal);
+        Vec3 side = Vec3.directionFromRotation(0.0F, yawTotal + 90.0F);
+        Vec3 lead = Vec3.directionFromRotation(0.0F, this.rigYaw).scale(this.followLead);
+        Vec3 pivot = new Vec3(subjectX, this.followPivotY, subjectZ).add(lead);
+        Vec3 anchor = pivot.add(side.scale(config.followShoulder));
+
+        // 5. Spring arm, pulled in by walls and eased back out when they are gone.
         double wanted = config.followDistance + followPadding(subject);
         if (config.followCollision) {
-            wanted = clipArm(level, subject, anchor, look, wanted);
+            wanted = clipArm(minecraft.level, subject, anchor, look, wanted);
         }
-        // Snap in when a wall appears, glide back out when it is gone.
-        double armAlpha = wanted < this.followArm ? 0.7D : 0.12D;
-        this.followArm += (wanted - this.followArm) * armAlpha;
+        this.followArm += (wanted - this.followArm)
+                * frameAlpha(wanted < this.followArm ? 0.75F : 0.14F, step);
 
         Vec3 desired = anchor.subtract(look.scale(this.followArm));
-        if (desired.distanceToSqr(this.position) > 256.0D) {
-            this.position = desired;
-        } else {
-            this.position = this.position.add(desired.subtract(this.position).scale(chaseAlpha));
+        this.prevPosition = this.position;
+        this.position = desired;
+        this.aimPoint = pivot;
+
+        // 6. Frame the pivot exactly. With no shoulder offset this is the rig angle itself,
+        // so the subject is pinned dead centre instead of sliding around.
+        Vec3 aim = pivot.subtract(desired);
+        double horizontal = Math.sqrt(aim.x * aim.x + aim.z * aim.z);
+        float lookYaw = yawTotal;
+        float lookPitch = pitchTotal;
+        if (horizontal > 1.0E-4D || Math.abs(aim.y) > 1.0E-4D) {
+            lookYaw = (float) (Math.toDegrees(Math.atan2(aim.z, aim.x)) - 90.0D);
+            lookPitch = (float) (-Math.toDegrees(Math.atan2(aim.y, horizontal)));
         }
-        this.aimPoint = anchor;
+        this.prevYaw = this.yaw;
+        this.prevPitch = this.pitch;
+        this.yaw = lookYaw;
+        this.pitch = lookPitch;
+        this.targetYaw = lookYaw;
+        this.targetPitch = lookPitch;
+
+        this.pushFrameToEntity();
+    }
+
+    /**
+     * Reads this frame's mouse movement off the frozen player and turns it into an orbit.
+     *
+     * <p>The player is turned by vanilla once per frame, before anything is rendered, so this
+     * is genuine per frame input rather than the tick sized steps the rig used to take.
+     */
+    private boolean consumeMouse(LocalPlayer player) {
+        if (!this.cameraControl) {
+            return false;
+        }
+        float deltaYaw = Mth.wrapDegrees(player.getYRot() - this.frozenYaw);
+        float deltaPitch = player.getXRot() - this.frozenPitch;
+        if (deltaYaw == 0.0F && deltaPitch == 0.0F) {
+            return false;
+        }
+        if (!PathManager.get().isPlaying()) {
+            this.applyOrbitInput(deltaYaw, deltaPitch);
+        }
+        this.restorePlayerRotation(player);
+        return true;
+    }
+
+    /** Mouse look for the chase rig: a temporary offset from the subject's back. */
+    private void applyOrbitInput(float deltaYaw, float deltaPitch) {
+        float sensitivity = (float) Mth.clamp(this.settings.followSensitivity, 0.1D, 4.0D);
+        this.orbitYaw = Mth.wrapDegrees(this.orbitYaw + deltaYaw * sensitivity);
+        float lower = -85.0F - this.settings.followPitch;
+        float upper = 85.0F - this.settings.followPitch;
+        this.orbitPitch = Mth.clamp(this.orbitPitch + deltaPitch * sensitivity, lower, upper);
+        this.followManual = MANUAL_HOLD;
     }
 
     /** Vanilla style zoom clipping: eight offset rays so the arm never pokes through a wall. */
@@ -866,11 +1033,16 @@ public class CameraController {
 
     /** Puts the rig straight behind the subject at the configured distance. */
     private void resetFollowRig(Entity subject) {
-        this.followYaw = Mth.wrapDegrees(subject.getYRot());
-        this.followPitch = Mth.clamp(this.settings.followPitch, -80.0F, 80.0F);
+        this.rigYaw = this.subjectFacing(subject);
+        this.orbitYaw = 0.0F;
+        this.orbitPitch = 0.0F;
         this.followArm = this.settings.followDistance + followPadding(subject);
         this.followPivotY = subject.getY() + this.aimHeightFor(subject);
+        this.followLead = 0.0D;
+        this.driveSmooth = 0.0D;
+        this.driveSigned = 0.0D;
         this.followManual = 0;
+        this.followReady = true;
     }
 
     /** Rebuilds the rig from where the camera currently hangs, so switching modes is seamless. */
@@ -882,13 +1054,19 @@ public class CameraController {
             this.resetFollowRig(subject);
             return;
         }
-        this.followYaw = (float) Math.toDegrees(Math.atan2(offset.x, -offset.z));
-        this.followPitch = Mth.clamp(
-                (float) Math.toDegrees(Math.asin(Mth.clamp(offset.y / length, -1.0D, 1.0D))), -80.0F, 80.0F);
+        float worldYaw = (float) Math.toDegrees(Math.atan2(offset.x, -offset.z));
+        float worldPitch = Mth.clamp(
+                (float) Math.toDegrees(Math.asin(Mth.clamp(offset.y / length, -1.0D, 1.0D))), -85.0F, 85.0F);
+        this.rigYaw = this.subjectFacing(subject);
+        this.orbitYaw = Mth.wrapDegrees(worldYaw - this.rigYaw);
+        this.orbitPitch = Mth.clamp(worldPitch - this.settings.followPitch,
+                -85.0F - this.settings.followPitch, 85.0F - this.settings.followPitch);
         this.settings.followDistance = Mth.clamp(length - followPadding(subject), 0.5D, 24.0D);
         this.followArm = length;
         this.followPivotY = anchor.y;
+        this.followLead = 0.0D;
         this.followManual = MANUAL_HOLD;
+        this.followReady = true;
     }
 
     // ------------------------------------------------------------------
@@ -911,10 +1089,8 @@ public class CameraController {
                 // has to be kept still.
                 if (!PathManager.get().isPlaying()) {
                     if (this.mode == CameraMode.FOLLOW) {
-                        // The mouse orbits the rig, like the right stick in a third person game.
-                        this.followYaw = Mth.wrapDegrees(this.followYaw + deltaYaw);
-                        this.followPitch = Mth.clamp(this.followPitch + deltaPitch, -80.0F, 80.0F);
-                        this.followManual = MANUAL_HOLD;
+                        // Normally already consumed for this frame by updateFrame().
+                        this.applyOrbitInput(deltaYaw, deltaPitch);
                     } else if (!this.mode.autoAim()) {
                         this.targetYaw = Mth.wrapDegrees(this.targetYaw + deltaYaw);
                         this.targetPitch = Mth.clamp(this.targetPitch + deltaPitch, -90.0F, 90.0F);
@@ -924,6 +1100,14 @@ public class CameraController {
             }
         }
         float partialTick = (float) event.getPartialTick();
+        if (this.mode == CameraMode.FOLLOW && this.followReady && !PathManager.get().isPlaying()) {
+            // The chase rig is already solved for this exact frame, so it must not be
+            // interpolated a second time.
+            event.setYaw(this.yaw);
+            event.setPitch(this.pitch);
+            event.setRoll(this.renderRoll(partialTick));
+            return;
+        }
         event.setYaw(this.renderYaw(partialTick));
         event.setPitch(this.renderPitch(partialTick));
         event.setRoll(this.renderRoll(partialTick));
@@ -970,6 +1154,27 @@ public class CameraController {
         this.camera.xRotO = this.prevPitch;
     }
 
+    /**
+     * Hands the camera entity a pose that is already correct for this frame. Both the current
+     * and the previous position are set to it, so vanilla's interpolation is a no-op.
+     */
+    private void pushFrameToEntity() {
+        if (this.camera == null) {
+            return;
+        }
+        this.camera.setPos(this.position.x, this.position.y, this.position.z);
+        this.camera.xo = this.position.x;
+        this.camera.yo = this.position.y;
+        this.camera.zo = this.position.z;
+        this.camera.xOld = this.position.x;
+        this.camera.yOld = this.position.y;
+        this.camera.zOld = this.position.z;
+        this.camera.setYRot(this.yaw);
+        this.camera.setXRot(this.pitch);
+        this.camera.yRotO = this.yaw;
+        this.camera.xRotO = this.pitch;
+    }
+
     private void freezePlayer(LocalPlayer player) {
         this.frozenYaw = Mth.wrapDegrees(player.getYRot());
         this.frozenPitch = Mth.clamp(player.getXRot(), -90.0F, 90.0F);
@@ -985,6 +1190,17 @@ public class CameraController {
         player.yHeadRotO = this.frozenYaw;
         player.yBodyRot = this.frozenYaw;
         player.yBodyRotO = this.frozenYaw;
+    }
+
+    /** Converts a per tick smoothing factor into one for a frame of the given length. */
+    private static float frameAlpha(float perTick, float frameTicks) {
+        if (perTick <= 0.0F || frameTicks <= 0.0F) {
+            return 0.0F;
+        }
+        if (perTick >= 1.0F) {
+            return 1.0F;
+        }
+        return 1.0F - (float) Math.pow(1.0F - perTick, frameTicks);
     }
 
     private static float approachAngle(float current, float target, float alpha) {
