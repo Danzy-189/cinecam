@@ -1,0 +1,134 @@
+package dev.danzy.cinecam.client;
+
+import com.mojang.logging.LogUtils;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
+import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Properties;
+import net.minecraft.util.Mth;
+import net.neoforged.fml.loading.FMLPaths;
+import org.slf4j.Logger;
+
+/** Настройки камеры, сохраняются в config/cinecam-client.properties. */
+public final class CameraSettings {
+    private static final Logger LOGGER = LogUtils.getLogger();
+    private static final String FILE_NAME = "cinecam-client.properties";
+
+    /** Блоков за тик. */
+    public double moveSpeed = 0.35D;
+    public double fov = 70.0D;
+    public boolean customFov = true;
+    public float smoothing = 0.45F;
+    public float roll = 0.0F;
+    public boolean pitchFlight = true;
+    public boolean letterbox = false;
+    public double letterboxRatio = 2.39D;
+    public boolean grid = false;
+    public double orbitRadius = 6.0D;
+    public double orbitHeight = 2.0D;
+    public double orbitSpeed = 12.0D;
+    public double aimHeight = 1.4D;
+
+    public void resetDefaults() {
+        this.moveSpeed = 0.35D;
+        this.fov = 70.0D;
+        this.customFov = true;
+        this.smoothing = 0.45F;
+        this.roll = 0.0F;
+        this.pitchFlight = true;
+        this.letterbox = false;
+        this.letterboxRatio = 2.39D;
+        this.grid = false;
+        this.orbitRadius = 6.0D;
+        this.orbitHeight = 2.0D;
+        this.orbitSpeed = 12.0D;
+        this.aimHeight = 1.4D;
+    }
+
+    public void clampAll() {
+        this.moveSpeed = Mth.clamp(this.moveSpeed, 0.02D, 4.0D);
+        this.fov = Mth.clamp(this.fov, 10.0D, 130.0D);
+        this.smoothing = Mth.clamp(this.smoothing, 0.0F, 0.95F);
+        this.roll = Mth.clamp(this.roll, -180.0F, 180.0F);
+        this.letterboxRatio = Mth.clamp(this.letterboxRatio, 1.0D, 4.0D);
+        this.orbitRadius = Mth.clamp(this.orbitRadius, 1.5D, 64.0D);
+        this.orbitHeight = Mth.clamp(this.orbitHeight, -16.0D, 32.0D);
+        this.orbitSpeed = Mth.clamp(this.orbitSpeed, -180.0D, 180.0D);
+        this.aimHeight = Mth.clamp(this.aimHeight, -1.0D, 4.0D);
+    }
+
+    private static Path file() {
+        return FMLPaths.CONFIGDIR.get().resolve(FILE_NAME);
+    }
+
+    public void load() {
+        Path path = file();
+        if (!Files.isRegularFile(path)) {
+            return;
+        }
+        Properties properties = new Properties();
+        try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
+            properties.load(reader);
+        } catch (IOException exception) {
+            LOGGER.warn("[CineCam] Не удалось прочитать настройки", exception);
+            return;
+        }
+        this.moveSpeed = readDouble(properties, "moveSpeed", this.moveSpeed);
+        this.fov = readDouble(properties, "fov", this.fov);
+        this.customFov = readBoolean(properties, "customFov", this.customFov);
+        this.smoothing = (float) readDouble(properties, "smoothing", this.smoothing);
+        this.roll = (float) readDouble(properties, "roll", this.roll);
+        this.pitchFlight = readBoolean(properties, "pitchFlight", this.pitchFlight);
+        this.letterbox = readBoolean(properties, "letterbox", this.letterbox);
+        this.letterboxRatio = readDouble(properties, "letterboxRatio", this.letterboxRatio);
+        this.grid = readBoolean(properties, "grid", this.grid);
+        this.orbitRadius = readDouble(properties, "orbitRadius", this.orbitRadius);
+        this.orbitHeight = readDouble(properties, "orbitHeight", this.orbitHeight);
+        this.orbitSpeed = readDouble(properties, "orbitSpeed", this.orbitSpeed);
+        this.aimHeight = readDouble(properties, "aimHeight", this.aimHeight);
+        this.clampAll();
+    }
+
+    public void save() {
+        this.clampAll();
+        Properties properties = new Properties();
+        properties.setProperty("moveSpeed", Double.toString(this.moveSpeed));
+        properties.setProperty("fov", Double.toString(this.fov));
+        properties.setProperty("customFov", Boolean.toString(this.customFov));
+        properties.setProperty("smoothing", Float.toString(this.smoothing));
+        properties.setProperty("roll", Float.toString(this.roll));
+        properties.setProperty("pitchFlight", Boolean.toString(this.pitchFlight));
+        properties.setProperty("letterbox", Boolean.toString(this.letterbox));
+        properties.setProperty("letterboxRatio", Double.toString(this.letterboxRatio));
+        properties.setProperty("grid", Boolean.toString(this.grid));
+        properties.setProperty("orbitRadius", Double.toString(this.orbitRadius));
+        properties.setProperty("orbitHeight", Double.toString(this.orbitHeight));
+        properties.setProperty("orbitSpeed", Double.toString(this.orbitSpeed));
+        properties.setProperty("aimHeight", Double.toString(this.aimHeight));
+        try (Writer writer = Files.newBufferedWriter(file(), StandardCharsets.UTF_8)) {
+            properties.store(writer, "CineCam client settings");
+        } catch (IOException exception) {
+            LOGGER.warn("[CineCam] Не удалось сохранить настройки", exception);
+        }
+    }
+
+    private static double readDouble(Properties properties, String key, double fallback) {
+        String value = properties.getProperty(key);
+        if (value == null) {
+            return fallback;
+        }
+        try {
+            return Double.parseDouble(value.trim());
+        } catch (NumberFormatException exception) {
+            return fallback;
+        }
+    }
+
+    private static boolean readBoolean(Properties properties, String key, boolean fallback) {
+        String value = properties.getProperty(key);
+        return value == null ? fallback : Boolean.parseBoolean(value.trim());
+    }
+}
