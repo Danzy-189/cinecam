@@ -21,8 +21,8 @@ public final class CineCamKeys {
 
     private CineCamKeys() {}
 
-    private static KeyMapping create(String name, int keyCode) {
-        return new KeyMapping("key.cinecam." + name, InputConstants.Type.KEYSYM, keyCode, CATEGORY);
+    private static KeyMapping create(String name, int key) {
+        return new KeyMapping("key.cinecam." + name, InputConstants.Type.KEYSYM, key, CATEGORY);
     }
 
     public static void register(RegisterKeyMappingsEvent event) {

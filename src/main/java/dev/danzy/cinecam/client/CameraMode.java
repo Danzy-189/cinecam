@@ -3,13 +3,13 @@ package dev.danzy.cinecam.client;
 import net.minecraft.network.chat.Component;
 
 public enum CameraMode {
-    /** Свободный полёт: мышь крутит камеру, WASD/Space/Shift двигают её. */
+    /** Manual flight, mouse rotates the camera. */
     FREE("free"),
-    /** Трекер: камера стоит там, где вы её оставили, но всегда смотрит на персонажа. */
+    /** Static rig that always keeps the player in frame. */
     TRACK("track"),
-    /** Орбита: камера сама облетает персонажа по кругу и смотрит на него. */
+    /** Automatic circular dolly around the player. */
     ORBIT("orbit"),
-    /** Следование: камера держит смещение относительно персонажа и смотрит на него. */
+    /** Drone that keeps an offset from the player and looks at them. */
     FOLLOW("follow");
 
     private final String id;
@@ -31,11 +31,11 @@ public enum CameraMode {
     }
 
     public CameraMode next() {
-        CameraMode[] values = values();
-        return values[(this.ordinal() + 1) % values.length];
+        CameraMode[] modes = values();
+        return modes[(this.ordinal() + 1) % modes.length];
     }
 
-    /** Режимы, в которых камера сама наводится на персонажа. */
+    /** True when the camera aims at the player on its own. */
     public boolean autoAim() {
         return this != FREE;
     }

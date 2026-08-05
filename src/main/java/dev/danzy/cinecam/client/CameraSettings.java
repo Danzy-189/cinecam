@@ -12,15 +12,16 @@ import net.minecraft.util.Mth;
 import net.neoforged.fml.loading.FMLPaths;
 import org.slf4j.Logger;
 
-/** Настройки камеры, сохраняются в config/cinecam-client.properties. */
-public final class CameraSettings {
+/** Client settings persisted to config/cinecam-client.properties. */
+public class CameraSettings {
     private static final Logger LOGGER = LogUtils.getLogger();
     private static final String FILE_NAME = "cinecam-client.properties";
 
-    /** Блоков за тик. */
+    /** Blocks per tick. */
     public double moveSpeed = 0.35D;
     public double fov = 70.0D;
     public boolean customFov = true;
+    /** 0 = instant camera, 0.95 = very heavy dolly. */
     public float smoothing = 0.45F;
     public float roll = 0.0F;
     public boolean pitchFlight = true;
@@ -29,7 +30,9 @@ public final class CameraSettings {
     public boolean grid = false;
     public double orbitRadius = 6.0D;
     public double orbitHeight = 2.0D;
+    /** Degrees per second. */
     public double orbitSpeed = 12.0D;
+    /** Aim point height above the player's feet. */
     public double aimHeight = 1.4D;
 
     public void resetDefaults() {
@@ -46,6 +49,7 @@ public final class CameraSettings {
         this.orbitHeight = 2.0D;
         this.orbitSpeed = 12.0D;
         this.aimHeight = 1.4D;
+        this.save();
     }
 
     public void clampAll() {
@@ -56,12 +60,8 @@ public final class CameraSettings {
         this.letterboxRatio = Mth.clamp(this.letterboxRatio, 1.0D, 4.0D);
         this.orbitRadius = Mth.clamp(this.orbitRadius, 1.5D, 64.0D);
         this.orbitHeight = Mth.clamp(this.orbitHeight, -16.0D, 32.0D);
-        this.orbitSpeed = Mth.clamp(this.orbitSpeed, -180.0D, 180.0D);
-        this.aimHeight = Mth.clamp(this.aimHeight, -1.0D, 4.0D);
-    }
-
-    private static Path file() {
-        return FMLPaths.CONFIGDIR.get().resolve(FILE_NAME);
+        this.orbitSpeed = Mth.clamp(this.orbitSpeed, -120.0D, 120.0D);
+        this.aimHeight = Mth.clamp(this.aimHeight, -2.0D, 4.0D);
     }
 
     public void load() {
@@ -72,8 +72,8 @@ public final class CameraSettings {
         Properties properties = new Properties();
         try (Reader reader = Files.newBufferedReader(path, StandardCharsets.UTF_8)) {
             properties.load(reader);
-        } catch (IOException exception) {
-            LOGGER.warn("[CineCam] Не удалось прочитать настройки", exception);
+        } catch (IOException | IllegalArgumentException exception) {
+            LOGGER.warn("[CineCam] Could not read {}", path, exception);
             return;
         }
         this.moveSpeed = readDouble(properties, "moveSpeed", this.moveSpeed);
@@ -108,27 +108,38 @@ public final class CameraSettings {
         properties.setProperty("orbitHeight", Double.toString(this.orbitHeight));
         properties.setProperty("orbitSpeed", Double.toString(this.orbitSpeed));
         properties.setProperty("aimHeight", Double.toString(this.aimHeight));
-        try (Writer writer = Files.newBufferedWriter(file(), StandardCharsets.UTF_8)) {
-            properties.store(writer, "CineCam client settings");
+        Path path = file();
+        try {
+            Path parent = path.getParent();
+            if (parent != null) {
+                Files.createDirectories(parent);
+            }
+            try (Writer writer = Files.newBufferedWriter(path, StandardCharsets.UTF_8)) {
+                properties.store(writer, "CineCam client settings");
+            }
         } catch (IOException exception) {
-            LOGGER.warn("[CineCam] Не удалось сохранить настройки", exception);
+            LOGGER.warn("[CineCam] Could not save {}", path, exception);
         }
     }
 
+    private static Path file() {
+        return FMLPaths.CONFIGDIR.get().resolve(FILE_NAME);
+    }
+
     private static double readDouble(Properties properties, String key, double fallback) {
-        String value = properties.getProperty(key);
-        if (value == null) {
+        String raw = properties.getProperty(key);
+        if (raw == null) {
             return fallback;
         }
         try {
-            return Double.parseDouble(value.trim());
+            return Double.parseDouble(raw.trim());
         } catch (NumberFormatException exception) {
             return fallback;
         }
     }
 
     private static boolean readBoolean(Properties properties, String key, boolean fallback) {
-        String value = properties.getProperty(key);
-        return value == null ? fallback : Boolean.parseBoolean(value.trim());
+        String raw = properties.getProperty(key);
+        return raw == null ? fallback : Boolean.parseBoolean(raw.trim());
     }
 }
