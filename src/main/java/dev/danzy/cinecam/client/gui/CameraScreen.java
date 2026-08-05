@@ -114,6 +114,11 @@ public class CameraScreen extends Screen {
             CameraController.get().settings.resetDefaults();
             this.rebuildWidgets();
         }).bounds(columnLeft, footerY, COLUMN_WIDTH, 20).build());
+        this.addRenderableWidget(Button.builder(Component.translatable("cinecam.screen.paths"), pressed -> {
+            if (this.minecraft != null) {
+                this.minecraft.setScreen(new PathScreen(this));
+            }
+        }).bounds(columnRight, footerY, COLUMN_WIDTH, 20).build());
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, pressed -> this.onClose())
                 .bounds(columnFollow, footerY, COLUMN_WIDTH, 20).build());
     }
@@ -146,6 +151,12 @@ public class CameraScreen extends Screen {
         graphics.drawString(this.font, this.title, this.left + COLUMN_ONE, this.top + 9, Theme.ACCENT, false);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.subtitle"),
                 this.left + COLUMN_ONE, this.top + 21, Theme.TEXT_DIM, false);
+
+        Component subject = Component.translatable("cinecam.screen.subject",
+                CameraController.get().targetName());
+        graphics.drawString(this.font, subject,
+                this.left + PANEL_WIDTH - 10 - this.font.width(subject), this.top + 21, Theme.TEXT, false);
+
         graphics.fill(this.left + COLUMN_ONE, this.top + 33, this.left + PANEL_WIDTH - 10, this.top + 34, Theme.BORDER);
         graphics.drawString(this.font, Component.translatable("cinecam.screen.section.modes"),
                 this.left + COLUMN_ONE, this.top + 37, Theme.TEXT_DIM, false);

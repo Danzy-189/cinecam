@@ -18,6 +18,14 @@ public final class CineCamKeys {
     public static final KeyMapping GRID = create("grid", GLFW.GLFW_KEY_G);
     public static final KeyMapping ROLL_LEFT = create("roll_left", GLFW.GLFW_KEY_Z);
     public static final KeyMapping ROLL_RIGHT = create("roll_right", GLFW.GLFW_KEY_X);
+    /** Store the current pose as a keyframe. */
+    public static final KeyMapping KEYFRAME = create("keyframe", GLFW.GLFW_KEY_K);
+    /** Play or stop the current path. */
+    public static final KeyMapping PLAY = create("play", GLFW.GLFW_KEY_P);
+    /** Open the keyframe editor. */
+    public static final KeyMapping PATHS = create("paths", GLFW.GLFW_KEY_O);
+    /** Pick whatever the view points at as the framed subject. */
+    public static final KeyMapping TARGET = create("target", GLFW.GLFW_KEY_Y);
 
     private CineCamKeys() {}
 
@@ -36,5 +44,9 @@ public final class CineCamKeys {
         event.register(GRID);
         event.register(ROLL_LEFT);
         event.register(ROLL_RIGHT);
+        event.register(KEYFRAME);
+        event.register(PLAY);
+        event.register(PATHS);
+        event.register(TARGET);
     }
 }
