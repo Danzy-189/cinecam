@@ -1,0 +1,30 @@
+modLoader = "javafml"
+loaderVersion = "[4,)"
+license = "MIT"
+issueTrackerURL = "https://github.com/Danzy-189/cinecam/issues"
+
+[[mods]]
+modId = "cinecam"
+version = "1.0.0"
+displayName = "CineCam"
+displayTest = "IGNORE_ALL_VERSION"
+authors = "Danzy"
+description = '''
+Кинематографическая камера для съёмки видео.
+Свободный полёт, трекер игрока, орбита и следование, скрытие интерфейса,
+кинематографические полосы и сетка кадра. Мод только клиентский.
+'''
+
+[[dependencies.cinecam]]
+modId = "neoforge"
+type = "required"
+versionRange = "[21.1.0,)"
+ordering = "NONE"
+side = "CLIENT"
+
+[[dependencies.cinecam]]
+modId = "minecraft"
+type = "required"
+versionRange = "[1.21.1, 1.22)"
+ordering = "NONE"
+side = "CLIENT"
