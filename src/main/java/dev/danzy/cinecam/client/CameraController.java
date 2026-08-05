@@ -10,6 +10,7 @@ import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
 import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
+import net.minecraft.world.level.ClipContext;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
 import net.minecraft.world.phys.HitResult;
@@ -19,6 +20,9 @@ import net.neoforged.neoforge.client.event.ViewportEvent;
 /** All CineCam state and movement logic. Client side only. */
 public class CameraController {
     private static final CameraController INSTANCE = new CameraController();
+
+    /** Ticks the follow camera waits after a manual orbit before it aligns again. */
+    private static final int MANUAL_HOLD = 30;
 
     public final CameraSettings settings = new CameraSettings();
 
@@ -31,8 +35,15 @@ public class CameraController {
     private Vec3 position = Vec3.ZERO;
     private Vec3 prevPosition = Vec3.ZERO;
     private Vec3 velocity = Vec3.ZERO;
-    private Vec3 followOffset = Vec3.ZERO;
+    private Vec3 aimPoint = Vec3.ZERO;
     private double orbitAngle;
+
+    /** Third person rig: orbit angles, smoothed arm length and smoothed pivot height. */
+    private float followYaw;
+    private float followPitch;
+    private double followArm;
+    private double followPivotY;
+    private int followManual;
 
     private float yaw;
     private float pitch;
@@ -114,8 +125,9 @@ public class CameraController {
         this.targetPitch = this.pitch;
         this.roll = this.settings.roll;
         this.prevRoll = this.roll;
-        this.followOffset = this.position.subtract(player.position());
         this.orbitAngle = Mth.wrapDegrees(player.getYRot() + 180.0F);
+        this.resetFollowRig(player);
+        this.aimPoint = player.position().add(0.0D, this.settings.aimHeight, 0.0D);
         this.freezePlayer(player);
         this.pushToEntity();
         this.savedCameraType = minecraft.options.getCameraType();
@@ -190,7 +202,6 @@ public class CameraController {
             return;
         }
         Vec3 offset = this.position.subtract(player.position());
-        this.followOffset = offset;
         double horizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
         if (horizontal > 0.1D) {
             this.settings.orbitRadius = Mth.clamp(horizontal, 1.5D, 64.0D);
@@ -198,6 +209,10 @@ public class CameraController {
         }
         this.settings.orbitHeight = Mth.clamp(offset.y, -16.0D, 32.0D);
         this.velocity = Vec3.ZERO;
+        if (newMode == CameraMode.FOLLOW) {
+            // Adopt whatever framing the camera already has so the switch does not jump.
+            this.adoptFollowRig(player);
+        }
         message(player, Component.translatable("cinecam.msg.mode", newMode.title()));
     }
 
@@ -219,7 +234,6 @@ public class CameraController {
         this.position = player.getEyePosition(1.0F);
         this.prevPosition = this.position;
         this.velocity = Vec3.ZERO;
-        this.followOffset = this.position.subtract(player.position());
         this.yaw = Mth.wrapDegrees(player.getYRot());
         this.pitch = Mth.clamp(player.getXRot(), -89.0F, 89.0F);
         this.prevYaw = this.yaw;
@@ -227,6 +241,7 @@ public class CameraController {
         this.targetYaw = this.yaw;
         this.targetPitch = this.pitch;
         this.orbitAngle = Mth.wrapDegrees(player.getYRot() + 180.0F);
+        this.resetFollowRig(player);
         this.pushToEntity();
     }
 
@@ -248,6 +263,9 @@ public class CameraController {
         if (Screen.hasControlDown()) {
             this.settings.customFov = true;
             this.settings.fov = Mth.clamp(this.settings.fov - delta * 2.0D, 10.0D, 130.0D);
+        } else if (this.mode == CameraMode.FOLLOW) {
+            // In a third person rig the wheel is the zoom, exactly like every other game.
+            this.settings.followDistance = Mth.clamp(this.settings.followDistance - delta * 0.5D, 0.5D, 24.0D);
         } else {
             this.settings.moveSpeed = Mth.clamp(this.settings.moveSpeed * Math.pow(1.15D, delta), 0.02D, 4.0D);
         }
@@ -363,18 +381,20 @@ public class CameraController {
         }
         this.velocity = this.velocity.add(wish.subtract(this.velocity).scale(moveAlpha));
 
+        this.aimPoint = player.position().add(0.0D, this.settings.aimHeight, 0.0D);
+
         switch (this.mode) {
             case FREE:
             case TRACK:
                 this.position = this.position.add(this.velocity);
                 break;
             case FOLLOW: {
-                this.followOffset = this.followOffset.add(this.velocity);
-                Vec3 desired = player.position().add(this.followOffset);
-                this.position = this.position.add(desired.subtract(this.position).scale(chaseAlpha));
+                this.velocity = Vec3.ZERO;
+                this.updateFollow(minecraft.level, player, acceptInput, forward, strafe, vertical, speed, chaseAlpha);
                 break;
             }
             case ORBIT: {
+                this.velocity = Vec3.ZERO;
                 if (acceptInput) {
                     if (forward != 0.0D) {
                         this.settings.orbitRadius = Mth.clamp(this.settings.orbitRadius - forward * speed, 1.5D, 64.0D);
@@ -401,7 +421,7 @@ public class CameraController {
 
         float rotAlpha = (float) Math.max(0.05D, 1.0D - smoothing);
         if (this.mode.autoAim()) {
-            Vec3 aim = player.position().add(0.0D, this.settings.aimHeight, 0.0D).subtract(this.position);
+            Vec3 aim = this.aimPoint.subtract(this.position);
             double horizontal = Math.sqrt(aim.x * aim.x + aim.z * aim.z);
             if (horizontal > 1.0E-4D || Math.abs(aim.y) > 1.0E-4D) {
                 this.targetYaw = (float) (Math.toDegrees(Math.atan2(aim.z, aim.x)) - 90.0D);
@@ -412,6 +432,124 @@ public class CameraController {
         this.pitch = Mth.clamp(this.pitch + (this.targetPitch - this.pitch) * rotAlpha, -90.0F, 90.0F);
         this.roll += (this.settings.roll - this.roll) * rotAlpha;
         this.pushToEntity();
+    }
+
+    // ------------------------------------------------------------------
+    // Third person follow rig
+    // ------------------------------------------------------------------
+
+    /**
+     * A spring arm anchored to the player instead of a fixed world offset. The arm keeps its
+     * own orbit angles, drifts back behind the player while they move, is pulled in by blocks
+     * and damps the vertical motion so jumps and stairs do not shake the frame.
+     */
+    private void updateFollow(ClientLevel level, LocalPlayer player, boolean acceptInput,
+            double forward, double strafe, double vertical, double speed, double chaseAlpha) {
+        CameraSettings config = this.settings;
+
+        if (acceptInput) {
+            if (forward != 0.0D) {
+                config.followDistance = Mth.clamp(config.followDistance - forward * speed, 0.5D, 24.0D);
+            }
+            if (strafe != 0.0D) {
+                this.followYaw = Mth.wrapDegrees(this.followYaw - (float) (strafe * 2.5D));
+                this.followManual = MANUAL_HOLD;
+            }
+            if (vertical != 0.0D) {
+                this.followPitch = Mth.clamp(this.followPitch - (float) (vertical * 1.5D), -80.0F, 80.0F);
+                config.followPitch = this.followPitch;
+                this.followManual = MANUAL_HOLD;
+            }
+        }
+
+        if (this.followManual > 0) {
+            this.followManual--;
+        } else if (config.followAlign > 0.0F) {
+            // Swing behind the player, faster the faster they move. This is what makes the
+            // camera turn with the character instead of sliding sideways next to them.
+            double motion = Math.sqrt(player.getDeltaMovement().horizontalDistanceSqr());
+            double drive = Mth.clamp(motion / 0.12D, 0.0D, 1.0D);
+            float alpha = (float) (config.followAlign * 0.30D * (0.20D + 0.80D * drive));
+            this.followYaw = approachAngle(this.followYaw, Mth.wrapDegrees(player.getYRot()), alpha);
+            this.followPitch += (config.followPitch - this.followPitch) * alpha * 0.5F;
+        }
+
+        double targetPivotY = player.getY() + config.aimHeight;
+        double pivotDelta = targetPivotY - this.followPivotY;
+        if (Math.abs(pivotDelta) > 4.0D) {
+            this.followPivotY = targetPivotY;
+        } else {
+            this.followPivotY += pivotDelta * (player.onGround() ? 0.5D : 0.18D);
+        }
+
+        Vec3 look = Vec3.directionFromRotation(this.followPitch, this.followYaw);
+        Vec3 side = Vec3.directionFromRotation(0.0F, this.followYaw + 90.0F);
+        Vec3 anchor = new Vec3(player.getX(), this.followPivotY, player.getZ())
+                .add(side.scale(config.followShoulder));
+
+        double wanted = config.followDistance;
+        if (config.followCollision) {
+            wanted = clipArm(level, player, anchor, look, wanted);
+        }
+        // Snap in when a wall appears, glide back out when it is gone.
+        double armAlpha = wanted < this.followArm ? 0.7D : 0.12D;
+        this.followArm += (wanted - this.followArm) * armAlpha;
+
+        Vec3 desired = anchor.subtract(look.scale(this.followArm));
+        if (desired.distanceToSqr(this.position) > 256.0D) {
+            this.position = desired;
+        } else {
+            this.position = this.position.add(desired.subtract(this.position).scale(chaseAlpha));
+        }
+        this.aimPoint = anchor;
+    }
+
+    /** Vanilla style zoom clipping: eight offset rays so the arm never pokes through a wall. */
+    private static double clipArm(ClientLevel level, LocalPlayer player, Vec3 anchor, Vec3 look, double wanted) {
+        double best = wanted;
+        for (int corner = 0; corner < 8; corner++) {
+            double offsetX = ((corner & 1) * 2 - 1) * 0.12D;
+            double offsetY = (((corner >> 1) & 1) * 2 - 1) * 0.12D;
+            double offsetZ = (((corner >> 2) & 1) * 2 - 1) * 0.12D;
+            Vec3 from = anchor.add(offsetX, offsetY, offsetZ);
+            Vec3 to = from.subtract(look.scale(wanted));
+            HitResult hit = level.clip(new ClipContext(from, to,
+                    ClipContext.Block.VISUAL, ClipContext.Fluid.NONE, player));
+            if (hit.getType() != HitResult.Type.MISS) {
+                double distance = hit.getLocation().distanceTo(anchor);
+                if (distance < best) {
+                    best = distance;
+                }
+            }
+        }
+        return Math.max(0.25D, best - 0.15D);
+    }
+
+    /** Puts the rig straight behind the player at the configured distance. */
+    private void resetFollowRig(LocalPlayer player) {
+        this.followYaw = Mth.wrapDegrees(player.getYRot());
+        this.followPitch = Mth.clamp(this.settings.followPitch, -80.0F, 80.0F);
+        this.followArm = this.settings.followDistance;
+        this.followPivotY = player.getY() + this.settings.aimHeight;
+        this.followManual = 0;
+    }
+
+    /** Rebuilds the rig from where the camera currently hangs, so switching modes is seamless. */
+    private void adoptFollowRig(LocalPlayer player) {
+        Vec3 anchor = player.position().add(0.0D, this.settings.aimHeight, 0.0D);
+        Vec3 offset = this.position.subtract(anchor);
+        double length = offset.length();
+        if (length < 0.3D) {
+            this.resetFollowRig(player);
+            return;
+        }
+        this.followYaw = (float) Math.toDegrees(Math.atan2(offset.x, -offset.z));
+        this.followPitch = Mth.clamp(
+                (float) Math.toDegrees(Math.asin(Mth.clamp(offset.y / length, -1.0D, 1.0D))), -80.0F, 80.0F);
+        this.settings.followDistance = Mth.clamp(length, 0.5D, 24.0D);
+        this.followArm = this.settings.followDistance;
+        this.followPivotY = anchor.y;
+        this.followManual = MANUAL_HOLD;
     }
 
     // ------------------------------------------------------------------
@@ -430,7 +568,12 @@ public class CameraController {
             float deltaYaw = Mth.wrapDegrees(player.getYRot() - this.frozenYaw);
             float deltaPitch = player.getXRot() - this.frozenPitch;
             if (deltaYaw != 0.0F || deltaPitch != 0.0F) {
-                if (!this.mode.autoAim()) {
+                if (this.mode == CameraMode.FOLLOW) {
+                    // The mouse orbits the rig, like the right stick in a third person game.
+                    this.followYaw = Mth.wrapDegrees(this.followYaw + deltaYaw);
+                    this.followPitch = Mth.clamp(this.followPitch + deltaPitch, -80.0F, 80.0F);
+                    this.followManual = MANUAL_HOLD;
+                } else if (!this.mode.autoAim()) {
                     this.targetYaw = Mth.wrapDegrees(this.targetYaw + deltaYaw);
                     this.targetPitch = Mth.clamp(this.targetPitch + deltaPitch, -90.0F, 90.0F);
                 }
