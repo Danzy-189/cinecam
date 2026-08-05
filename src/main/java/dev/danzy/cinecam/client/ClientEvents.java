@@ -4,6 +4,8 @@ import dev.danzy.cinecam.client.gui.CameraHudLayer;
 import dev.danzy.cinecam.client.gui.CameraScreen;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.player.Input;
+import net.minecraft.client.player.LocalPlayer;
+import net.minecraft.world.entity.player.Abilities;
 import net.neoforged.bus.api.SubscribeEvent;
 import net.neoforged.neoforge.client.event.ClientTickEvent;
 import net.neoforged.neoforge.client.event.InputEvent;
@@ -30,7 +32,7 @@ public final class ClientEvents {
         Minecraft minecraft = Minecraft.getInstance();
         CameraController controller = CameraController.get();
         while (CineCamKeys.TOGGLE.consumeClick()) {
-            controller.toggle();
+            toggleCamera(minecraft, controller);
         }
         while (CineCamKeys.CONTROL.consumeClick()) {
             controller.toggleControl();
@@ -57,6 +59,29 @@ public final class ClientEvents {
         }
     }
 
+    /**
+     * Leaving camera mode while the player was already in control must not snap the view
+     * back to the rotation that was frozen when the camera took over, so the current look
+     * direction is preserved across the toggle.
+     */
+    private static void toggleCamera(Minecraft minecraft, CameraController controller) {
+        LocalPlayer player = minecraft.player;
+        boolean keepLook = player != null && controller.isActive() && !controller.isControllingCamera();
+        float yRot = player == null ? 0.0F : player.getYRot();
+        float xRot = player == null ? 0.0F : player.getXRot();
+        controller.toggle();
+        if (keepLook) {
+            player.setYRot(yRot);
+            player.setXRot(xRot);
+            player.yRotO = yRot;
+            player.xRotO = xRot;
+            player.setYHeadRot(yRot);
+            player.yHeadRotO = yRot;
+            player.yBodyRot = yRot;
+            player.yBodyRotO = yRot;
+        }
+    }
+
     @SubscribeEvent
     public static void onComputeCameraAngles(ViewportEvent.ComputeCameraAngles event) {
         CameraController.get().applyCameraAngles(event);
@@ -70,22 +95,62 @@ public final class ClientEvents {
         }
     }
 
-    /** While the camera is driven, the player must not walk around. */
+    /**
+     * Movement plumbing.
+     *
+     * <p>Vanilla only feeds the keyboard input into the player when
+     * {@code LocalPlayer#isControlledCamera()} is true, and that method is simply
+     * {@code Minecraft#getCameraEntity() == this}. CineCam replaces the camera entity, so
+     * {@code LocalPlayer#serverAiStep()} stops writing {@code xxa}/{@code zza}/{@code jumping}
+     * and {@code LocalPlayer#aiStep()} stops applying the vertical creative-flight thrust.
+     * The result is a player that can only turn its head and sneak, because those two read
+     * the raw input instead. This hook fires right after {@code Input#tick()} and before
+     * {@code serverAiStep()}, so whatever is written here is exactly what
+     * {@code LivingEntity#travel} consumes on the same tick.
+     */
     @SubscribeEvent
     public static void onMovementInput(MovementInputUpdateEvent event) {
+        Minecraft minecraft = Minecraft.getInstance();
         CameraController controller = CameraController.get();
-        if (!controller.isControllingCamera() || event.getEntity() != Minecraft.getInstance().player) {
+        LocalPlayer player = minecraft.player;
+        if (player == null || !controller.isActive() || event.getEntity() != player) {
             return;
         }
         Input input = event.getInput();
-        input.up = false;
-        input.down = false;
-        input.left = false;
-        input.right = false;
-        input.jumping = false;
-        input.shiftKeyDown = false;
-        input.forwardImpulse = 0.0F;
-        input.leftImpulse = 0.0F;
+        if (controller.isControllingCamera()) {
+            // The keyboard drives the camera, so the player has to stand still.
+            input.up = false;
+            input.down = false;
+            input.left = false;
+            input.right = false;
+            input.jumping = false;
+            input.shiftKeyDown = false;
+            input.forwardImpulse = 0.0F;
+            input.leftImpulse = 0.0F;
+        }
+        drivePlayer(player, input);
+    }
+
+    /** Does the work vanilla skips while the camera entity is not the player. */
+    private static void drivePlayer(LocalPlayer player, Input input) {
+        player.xxa = input.leftImpulse;
+        player.zza = input.forwardImpulse;
+        player.setJumping(input.jumping);
+
+        Abilities abilities = player.getAbilities();
+        if (abilities.flying) {
+            int vertical = 0;
+            if (input.shiftKeyDown) {
+                vertical--;
+            }
+            if (input.jumping) {
+                vertical++;
+            }
+            if (vertical != 0) {
+                double thrust = (double) ((float) vertical * abilities.getFlyingSpeed() * 3.0F);
+                player.setDeltaMovement(player.getDeltaMovement().add(0.0D, thrust, 0.0D));
+            }
+        }
     }
 
     @SubscribeEvent
@@ -114,7 +179,9 @@ public final class ClientEvents {
             event.setCanceled(true);
             return;
         }
-        if (controller.isActive() && VanillaGuiLayers.CROSSHAIR.equals(event.getName())) {
+        // The crosshair only lies while the camera is being flown; when the player is back
+        // in control it marks what will actually be hit, so it has to stay visible.
+        if (controller.isControllingCamera() && VanillaGuiLayers.CROSSHAIR.equals(event.getName())) {
             event.setCanceled(true);
         }
     }
