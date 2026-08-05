@@ -58,7 +58,7 @@ public final class ClientEvents {
     }
 
     @SubscribeEvent
-    public static void onCameraAngles(ViewportEvent.ComputeCameraAngles event) {
+    public static void onComputeCameraAngles(ViewportEvent.ComputeCameraAngles event) {
         CameraController.get().applyCameraAngles(event);
     }
 
@@ -70,7 +70,7 @@ public final class ClientEvents {
         }
     }
 
-    /** Пока управляем камерой - персонаж не двигается. */
+    /** While the camera is driven, the player must not walk around. */
     @SubscribeEvent
     public static void onMovementInput(MovementInputUpdateEvent event) {
         CameraController controller = CameraController.get();
@@ -88,7 +88,6 @@ public final class ClientEvents {
         input.leftImpulse = 0.0F;
     }
 
-    /** Колесо мыши: скорость камеры, с Ctrl - FOV. */
     @SubscribeEvent
     public static void onMouseScroll(InputEvent.MouseScrollingEvent event) {
         if (CameraController.get().handleScroll(event.getScrollDeltaY())) {
@@ -96,7 +95,7 @@ public final class ClientEvents {
         }
     }
 
-    /** Пока управляем камерой - не ломаем и не ставим блоки. */
+    /** No attacking or item use while the mouse drives the camera. */
     @SubscribeEvent
     public static void onInteraction(InputEvent.InteractionKeyMappingTriggered event) {
         if (CameraController.get().isControllingCamera()) {
@@ -105,9 +104,8 @@ public final class ClientEvents {
         }
     }
 
-    /** Скрытие интерфейса и прицела без вмешательства в F1. */
     @SubscribeEvent
-    public static void onGuiLayer(RenderGuiLayerEvent.Pre event) {
+    public static void onRenderGuiLayer(RenderGuiLayerEvent.Pre event) {
         CameraController controller = CameraController.get();
         if (CameraHudLayer.ID.equals(event.getName())) {
             return;

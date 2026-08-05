@@ -4,9 +4,11 @@ import net.minecraft.client.CameraType;
 import net.minecraft.client.Minecraft;
 import net.minecraft.client.Options;
 import net.minecraft.client.gui.screens.Screen;
+import net.minecraft.client.multiplayer.ClientLevel;
 import net.minecraft.client.player.LocalPlayer;
 import net.minecraft.network.chat.Component;
 import net.minecraft.util.Mth;
+import net.minecraft.world.entity.Entity;
 import net.minecraft.world.entity.projectile.ProjectileUtil;
 import net.minecraft.world.phys.AABB;
 import net.minecraft.world.phys.EntityHitResult;
@@ -14,25 +16,22 @@ import net.minecraft.world.phys.HitResult;
 import net.minecraft.world.phys.Vec3;
 import net.neoforged.neoforge.client.event.ViewportEvent;
 
-/**
- * Вся логика режима камеры: состояние, движение, наведение и перехват управления.
- */
-public final class CameraController {
+/** All CineCam state and movement logic. Client side only. */
+public class CameraController {
     private static final CameraController INSTANCE = new CameraController();
 
     public final CameraSettings settings = new CameraSettings();
 
     private boolean active;
-    private boolean cameraControl = true;
+    private boolean cameraControl;
     private boolean uiHidden;
     private CameraMode mode = CameraMode.FREE;
-
     private CameraEntity camera;
 
-    private Vec3 pos = Vec3.ZERO;
-    private Vec3 prevPos = Vec3.ZERO;
+    private Vec3 position = Vec3.ZERO;
+    private Vec3 prevPosition = Vec3.ZERO;
     private Vec3 velocity = Vec3.ZERO;
-    private Vec3 followOffset = new Vec3(0.0D, 1.5D, -4.0D);
+    private Vec3 followOffset = Vec3.ZERO;
     private double orbitAngle;
 
     private float yaw;
@@ -43,10 +42,8 @@ public final class CameraController {
     private float prevRoll;
     private float targetYaw;
     private float targetPitch;
-
     private float frozenYaw;
     private float frozenPitch;
-
     private CameraType savedCameraType = CameraType.FIRST_PERSON;
 
     private CameraController() {}
@@ -72,7 +69,7 @@ public final class CameraController {
     }
 
     public Vec3 getPosition() {
-        return this.pos;
+        return this.position;
     }
 
     public double speedPerSecond() {
@@ -80,10 +77,15 @@ public final class CameraController {
     }
 
     public double currentFov() {
-        return this.settings.fov;
+        if (this.settings.customFov) {
+            return this.settings.fov;
+        }
+        return Minecraft.getInstance().options.fov().get().doubleValue();
     }
 
-    // ------------------------------------------------------------------ переключатели
+    // ------------------------------------------------------------------
+    // Lifecycle
+    // ------------------------------------------------------------------
 
     public void toggle() {
         if (this.active) {
@@ -96,54 +98,70 @@ public final class CameraController {
     public void start() {
         Minecraft minecraft = Minecraft.getInstance();
         LocalPlayer player = minecraft.player;
-        if (player == null || minecraft.level == null || this.active) {
+        ClientLevel level = minecraft.level;
+        if (player == null || level == null) {
             return;
         }
-        this.camera = new CameraEntity(minecraft.level);
-        Vec3 eye = player.getEyePosition(1.0F);
-        this.pos = eye;
-        this.prevPos = eye;
+        this.camera = new CameraEntity(level);
+        this.position = player.getEyePosition(1.0F);
+        this.prevPosition = this.position;
         this.velocity = Vec3.ZERO;
-        this.yaw = player.getYRot();
-        this.prevYaw = this.yaw;
-        this.targetYaw = this.yaw;
+        this.yaw = Mth.wrapDegrees(player.getYRot());
         this.pitch = Mth.clamp(player.getXRot(), -89.0F, 89.0F);
+        this.prevYaw = this.yaw;
         this.prevPitch = this.pitch;
+        this.targetYaw = this.yaw;
         this.targetPitch = this.pitch;
         this.roll = this.settings.roll;
         this.prevRoll = this.roll;
-        this.followOffset = eye.subtract(player.position());
+        this.followOffset = this.position.subtract(player.position());
         this.orbitAngle = Mth.wrapDegrees(player.getYRot() + 180.0F);
         this.freezePlayer(player);
-        this.camera.place(this.pos, this.prevPos, this.yaw, this.pitch, this.prevYaw, this.prevPitch);
+        this.pushToEntity();
         this.savedCameraType = minecraft.options.getCameraType();
         minecraft.options.setCameraType(CameraType.FIRST_PERSON);
         minecraft.setCameraEntity(this.camera);
         this.active = true;
         this.cameraControl = true;
-        this.message(Component.translatable("cinecam.msg.enabled"));
+        this.uiHidden = false;
+        message(player, Component.translatable("cinecam.msg.enabled"));
     }
 
     public void stop(boolean notify) {
-        if (!this.active) {
-            return;
-        }
         Minecraft minecraft = Minecraft.getInstance();
+        LocalPlayer player = minecraft.player;
         this.active = false;
+        this.cameraControl = false;
         this.uiHidden = false;
         this.camera = null;
         this.velocity = Vec3.ZERO;
-        LocalPlayer player = minecraft.player;
         if (player != null) {
             this.restorePlayerRotation(player);
             minecraft.setCameraEntity(player);
-            if (notify) {
-                this.message(Component.translatable("cinecam.msg.disabled"));
-            }
         }
         minecraft.options.setCameraType(this.savedCameraType);
         this.settings.save();
+        if (notify && player != null) {
+            message(player, Component.translatable("cinecam.msg.disabled"));
+        }
     }
+
+    private void hardReset() {
+        Minecraft minecraft = Minecraft.getInstance();
+        this.active = false;
+        this.cameraControl = false;
+        this.uiHidden = false;
+        this.camera = null;
+        this.velocity = Vec3.ZERO;
+        if (minecraft.player != null) {
+            minecraft.setCameraEntity(minecraft.player);
+        }
+        minecraft.options.setCameraType(this.savedCameraType);
+    }
+
+    // ------------------------------------------------------------------
+    // Commands bound to keys
+    // ------------------------------------------------------------------
 
     public void toggleControl() {
         if (!this.active) {
@@ -151,48 +169,43 @@ public final class CameraController {
         }
         this.cameraControl = !this.cameraControl;
         LocalPlayer player = Minecraft.getInstance().player;
-        if (player != null && this.cameraControl) {
-            this.freezePlayer(player);
+        if (player != null) {
+            if (this.cameraControl) {
+                this.freezePlayer(player);
+            }
+            message(player, Component.translatable(this.cameraControl
+                    ? "cinecam.msg.control.camera"
+                    : "cinecam.msg.control.player"));
         }
-        this.message(Component.translatable(this.cameraControl ? "cinecam.msg.control.camera" : "cinecam.msg.control.player"));
     }
 
     public void cycleMode() {
-        if (!this.active) {
-            return;
-        }
         this.setMode(this.mode.next());
     }
 
     public void setMode(CameraMode newMode) {
         this.mode = newMode;
         LocalPlayer player = Minecraft.getInstance().player;
-        if (this.active && player != null) {
-            if (newMode == CameraMode.FOLLOW) {
-                this.followOffset = this.pos.subtract(player.position());
-            } else if (newMode == CameraMode.ORBIT) {
-                Vec3 delta = this.pos.subtract(player.position());
-                double horizontal = Math.sqrt(delta.x * delta.x + delta.z * delta.z);
-                if (horizontal > 0.1D) {
-                    this.orbitAngle = Math.toDegrees(Math.atan2(delta.z, delta.x));
-                    this.settings.orbitRadius = Mth.clamp(horizontal, 1.5D, 64.0D);
-                    this.settings.orbitHeight = Mth.clamp(delta.y, -16.0D, 32.0D);
-                }
-            }
-            this.message(Component.translatable("cinecam.msg.mode", newMode.title()));
+        if (!this.active || player == null) {
+            return;
         }
+        Vec3 offset = this.position.subtract(player.position());
+        this.followOffset = offset;
+        double horizontal = Math.sqrt(offset.x * offset.x + offset.z * offset.z);
+        if (horizontal > 0.1D) {
+            this.settings.orbitRadius = Mth.clamp(horizontal, 1.5D, 64.0D);
+            this.orbitAngle = Math.toDegrees(Math.atan2(offset.z, offset.x));
+        }
+        this.settings.orbitHeight = Mth.clamp(offset.y, -16.0D, 32.0D);
+        this.velocity = Vec3.ZERO;
+        message(player, Component.translatable("cinecam.msg.mode", newMode.title()));
     }
 
     public void toggleUi() {
+        if (!this.active) {
+            return;
+        }
         this.uiHidden = !this.uiHidden;
-    }
-
-    public void toggleLetterbox() {
-        this.settings.letterbox = !this.settings.letterbox;
-    }
-
-    public void toggleGrid() {
-        this.settings.grid = !this.settings.grid;
     }
 
     public void recenter() {
@@ -203,39 +216,78 @@ public final class CameraController {
         if (player == null) {
             return;
         }
-        Vec3 eye = player.getEyePosition(1.0F);
-        this.pos = eye;
-        this.prevPos = eye;
+        this.position = player.getEyePosition(1.0F);
+        this.prevPosition = this.position;
         this.velocity = Vec3.ZERO;
-        this.yaw = player.getYRot();
-        this.prevYaw = this.yaw;
-        this.targetYaw = this.yaw;
+        this.followOffset = this.position.subtract(player.position());
+        this.yaw = Mth.wrapDegrees(player.getYRot());
         this.pitch = Mth.clamp(player.getXRot(), -89.0F, 89.0F);
+        this.prevYaw = this.yaw;
         this.prevPitch = this.pitch;
+        this.targetYaw = this.yaw;
         this.targetPitch = this.pitch;
-        this.followOffset = eye.subtract(player.position());
         this.orbitAngle = Mth.wrapDegrees(player.getYRot() + 180.0F);
-        if (this.camera != null) {
-            this.camera.place(this.pos, this.prevPos, this.yaw, this.pitch, this.prevYaw, this.prevPitch);
-        }
+        this.pushToEntity();
     }
 
-    // ------------------------------------------------------------------ такт
+    public void toggleLetterbox() {
+        this.settings.letterbox = !this.settings.letterbox;
+        this.settings.save();
+    }
 
-    /** Вызывается до обработки клавиш игры, чтобы прицел брался от персонажа, а не от камеры. */
+    public void toggleGrid() {
+        this.settings.grid = !this.settings.grid;
+        this.settings.save();
+    }
+
+    public boolean handleScroll(double delta) {
+        Minecraft minecraft = Minecraft.getInstance();
+        if (!this.active || !this.cameraControl || delta == 0.0D || minecraft.screen != null) {
+            return false;
+        }
+        if (Screen.hasControlDown()) {
+            this.settings.customFov = true;
+            this.settings.fov = Mth.clamp(this.settings.fov - delta * 2.0D, 10.0D, 130.0D);
+        } else {
+            this.settings.moveSpeed = Mth.clamp(this.settings.moveSpeed * Math.pow(1.15D, delta), 0.02D, 4.0D);
+        }
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Tick
+    // ------------------------------------------------------------------
+
+    /** Runs before the vanilla client tick: fixes what the player is aiming at. */
     public void beforeTick() {
-        if (!this.active) {
+        if (!this.active || this.cameraControl) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
         LocalPlayer player = minecraft.player;
         if (player == null || minecraft.level == null) {
-            this.hardReset();
             return;
         }
-        if (!this.cameraControl) {
-            this.updatePlayerHitResult(minecraft, player);
+        double reach = player.isCreative() ? 5.0D : 4.5D;
+        HitResult blockHit = player.pick(reach, 1.0F, false);
+        Vec3 eye = player.getEyePosition(1.0F);
+        Vec3 view = player.getViewVector(1.0F);
+        Vec3 end = eye.add(view.scale(3.0D));
+        AABB box = player.getBoundingBox().expandTowards(view.scale(3.0D)).inflate(1.0D);
+        EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(player, eye, end, box,
+                candidate -> !candidate.isSpectator() && candidate.isPickable(), 9.0D);
+        HitResult result = blockHit;
+        Entity picked = null;
+        if (entityHit != null) {
+            double entityDistance = eye.distanceToSqr(entityHit.getLocation());
+            double blockDistance = blockHit == null ? Double.MAX_VALUE : eye.distanceToSqr(blockHit.getLocation());
+            if (entityDistance < blockDistance) {
+                result = entityHit;
+                picked = entityHit.getEntity();
+            }
         }
+        minecraft.hitResult = result;
+        minecraft.crosshairPickEntity = picked;
     }
 
     public void tick() {
@@ -244,46 +296,47 @@ public final class CameraController {
         }
         Minecraft minecraft = Minecraft.getInstance();
         LocalPlayer player = minecraft.player;
-        if (player == null || minecraft.level == null || this.camera == null) {
+        if (player == null || minecraft.level == null || this.camera == null
+                || this.camera.level() != minecraft.level) {
             this.hardReset();
             return;
-        }
-        if (minecraft.getCameraEntity() != this.camera) {
-            minecraft.setCameraEntity(this.camera);
         }
         if (minecraft.options.getCameraType() != CameraType.FIRST_PERSON) {
             minecraft.options.setCameraType(CameraType.FIRST_PERSON);
         }
+        if (minecraft.getCameraEntity() != this.camera) {
+            minecraft.setCameraEntity(this.camera);
+        }
 
-        this.prevPos = this.pos;
+        this.prevPosition = this.position;
         this.prevYaw = this.yaw;
         this.prevPitch = this.pitch;
         this.prevRoll = this.roll;
 
-        boolean readInput = this.cameraControl && minecraft.screen == null;
         Options options = minecraft.options;
-        float forward = 0.0F;
-        float strafe = 0.0F;
-        float vertical = 0.0F;
+        boolean acceptInput = this.cameraControl && minecraft.screen == null;
+        double forward = 0.0D;
+        double strafe = 0.0D;
+        double vertical = 0.0D;
         boolean sprint = false;
-        if (readInput) {
+        if (acceptInput) {
             if (options.keyUp.isDown()) {
-                forward += 1.0F;
+                forward += 1.0D;
             }
             if (options.keyDown.isDown()) {
-                forward -= 1.0F;
+                forward -= 1.0D;
             }
             if (options.keyLeft.isDown()) {
-                strafe += 1.0F;
+                strafe += 1.0D;
             }
             if (options.keyRight.isDown()) {
-                strafe -= 1.0F;
+                strafe -= 1.0D;
             }
             if (options.keyJump.isDown()) {
-                vertical += 1.0F;
+                vertical += 1.0D;
             }
             if (options.keyShift.isDown()) {
-                vertical -= 1.0F;
+                vertical -= 1.0D;
             }
             sprint = options.keySprint.isDown();
             if (CineCamKeys.ROLL_LEFT.isDown()) {
@@ -296,10 +349,11 @@ public final class CameraController {
 
         float smoothing = Mth.clamp(this.settings.smoothing, 0.0F, 0.95F);
         double moveAlpha = Math.max(0.05D, 1.0D - smoothing);
+        double chaseAlpha = Math.max(0.06D, 1.0D - smoothing);
         double speed = this.settings.moveSpeed * (sprint ? 3.0D : 1.0D);
 
         Vec3 wish = Vec3.ZERO;
-        if (this.mode != CameraMode.ORBIT) {
+        if (forward != 0.0D || strafe != 0.0D || vertical != 0.0D) {
             Vec3 look = Vec3.directionFromRotation(this.settings.pitchFlight ? this.pitch : 0.0F, this.yaw);
             Vec3 left = Vec3.directionFromRotation(0.0F, this.yaw - 90.0F);
             Vec3 raw = look.scale(forward).add(left.scale(strafe)).add(0.0D, vertical, 0.0D);
@@ -308,48 +362,61 @@ public final class CameraController {
             }
         }
         this.velocity = this.velocity.add(wish.subtract(this.velocity).scale(moveAlpha));
-        if (this.velocity.lengthSqr() < 1.0E-9D) {
-            this.velocity = Vec3.ZERO;
-        }
 
-        if (this.mode == CameraMode.FREE || this.mode == CameraMode.TRACK) {
-            this.pos = this.pos.add(this.velocity);
-        } else if (this.mode == CameraMode.FOLLOW) {
-            this.followOffset = this.followOffset.add(this.velocity);
-            Vec3 desired = player.position().add(this.followOffset);
-            this.pos = this.pos.add(desired.subtract(this.pos).scale(Math.max(0.06D, 1.0D - smoothing)));
-        } else {
-            if (readInput) {
-                this.settings.orbitRadius = Mth.clamp(this.settings.orbitRadius - forward * 0.25D, 1.5D, 64.0D);
-                this.settings.orbitHeight = Mth.clamp(this.settings.orbitHeight + vertical * 0.25D, -16.0D, 32.0D);
-                this.orbitAngle += strafe * 2.0D;
+        switch (this.mode) {
+            case FREE:
+            case TRACK:
+                this.position = this.position.add(this.velocity);
+                break;
+            case FOLLOW: {
+                this.followOffset = this.followOffset.add(this.velocity);
+                Vec3 desired = player.position().add(this.followOffset);
+                this.position = this.position.add(desired.subtract(this.position).scale(chaseAlpha));
+                break;
             }
-            this.orbitAngle = Mth.wrapDegrees(this.orbitAngle + this.settings.orbitSpeed / 20.0D);
-            double radians = Math.toRadians(this.orbitAngle);
-            Vec3 desired = player.position().add(
-                    Math.cos(radians) * this.settings.orbitRadius,
-                    this.settings.orbitHeight,
-                    Math.sin(radians) * this.settings.orbitRadius);
-            this.pos = this.pos.add(desired.subtract(this.pos).scale(Math.max(0.06D, 1.0D - smoothing)));
+            case ORBIT: {
+                if (acceptInput) {
+                    if (forward != 0.0D) {
+                        this.settings.orbitRadius = Mth.clamp(this.settings.orbitRadius - forward * speed, 1.5D, 64.0D);
+                    }
+                    if (vertical != 0.0D) {
+                        this.settings.orbitHeight = Mth.clamp(this.settings.orbitHeight + vertical * speed, -16.0D, 32.0D);
+                    }
+                    if (strafe != 0.0D) {
+                        this.orbitAngle = Mth.wrapDegrees(this.orbitAngle + strafe * 2.0D);
+                    }
+                }
+                this.orbitAngle = Mth.wrapDegrees(this.orbitAngle + this.settings.orbitSpeed / 20.0D);
+                double radians = Math.toRadians(this.orbitAngle);
+                Vec3 desired = player.position().add(
+                        Math.cos(radians) * this.settings.orbitRadius,
+                        this.settings.orbitHeight,
+                        Math.sin(radians) * this.settings.orbitRadius);
+                this.position = this.position.add(desired.subtract(this.position).scale(chaseAlpha));
+                break;
+            }
+            default:
+                break;
         }
 
-        float rotationAlpha = Math.max(0.05F, 1.0F - smoothing);
+        float rotAlpha = (float) Math.max(0.05D, 1.0D - smoothing);
         if (this.mode.autoAim()) {
-            Vec3 aim = player.position().add(0.0D, this.settings.aimHeight, 0.0D).subtract(this.pos);
+            Vec3 aim = player.position().add(0.0D, this.settings.aimHeight, 0.0D).subtract(this.position);
             double horizontal = Math.sqrt(aim.x * aim.x + aim.z * aim.z);
             if (horizontal > 1.0E-4D || Math.abs(aim.y) > 1.0E-4D) {
                 this.targetYaw = (float) (Math.toDegrees(Math.atan2(aim.z, aim.x)) - 90.0D);
                 this.targetPitch = (float) (-Math.toDegrees(Math.atan2(aim.y, horizontal)));
             }
         }
-        this.yaw = this.yaw + Mth.wrapDegrees(this.targetYaw - this.yaw) * rotationAlpha;
-        this.pitch = Mth.clamp(this.pitch + (this.targetPitch - this.pitch) * rotationAlpha, -90.0F, 90.0F);
-        this.roll = this.roll + (this.settings.roll - this.roll) * rotationAlpha;
-
-        this.camera.place(this.pos, this.prevPos, this.yaw, this.pitch, this.prevYaw, this.prevPitch);
+        this.yaw = approachAngle(this.yaw, this.targetYaw, rotAlpha);
+        this.pitch = Mth.clamp(this.pitch + (this.targetPitch - this.pitch) * rotAlpha, -90.0F, 90.0F);
+        this.roll += (this.settings.roll - this.roll) * rotAlpha;
+        this.pushToEntity();
     }
 
-    // ------------------------------------------------------------------ кадр
+    // ------------------------------------------------------------------
+    // Rendering
+    // ------------------------------------------------------------------
 
     public void applyCameraAngles(ViewportEvent.ComputeCameraAngles event) {
         if (!this.active) {
@@ -392,24 +459,30 @@ public final class CameraController {
         return Mth.lerp(partialTick, this.prevRoll, this.roll);
     }
 
-    // ------------------------------------------------------------------ ввод
+    // ------------------------------------------------------------------
+    // Helpers
+    // ------------------------------------------------------------------
 
-    public boolean handleScroll(double delta) {
-        if (!this.isControllingCamera() || delta == 0.0D) {
-            return false;
+    private void pushToEntity() {
+        if (this.camera == null) {
+            return;
         }
-        if (Screen.hasControlDown()) {
-            this.settings.fov = Mth.clamp(this.settings.fov - delta * 2.0D, 10.0D, 130.0D);
-            this.settings.customFov = true;
-        } else {
-            this.settings.moveSpeed = Mth.clamp(this.settings.moveSpeed * Math.pow(1.15D, delta), 0.02D, 4.0D);
-        }
-        return true;
+        this.camera.setPos(this.position.x, this.position.y, this.position.z);
+        this.camera.xo = this.prevPosition.x;
+        this.camera.yo = this.prevPosition.y;
+        this.camera.zo = this.prevPosition.z;
+        this.camera.xOld = this.prevPosition.x;
+        this.camera.yOld = this.prevPosition.y;
+        this.camera.zOld = this.prevPosition.z;
+        this.camera.setYRot(this.yaw);
+        this.camera.setXRot(this.pitch);
+        this.camera.yRotO = this.prevYaw;
+        this.camera.xRotO = this.prevPitch;
     }
 
     private void freezePlayer(LocalPlayer player) {
         this.frozenYaw = Mth.wrapDegrees(player.getYRot());
-        this.frozenPitch = Mth.clamp(player.getXRot(), -80.0F, 80.0F);
+        this.frozenPitch = Mth.clamp(player.getXRot(), -90.0F, 90.0F);
         this.restorePlayerRotation(player);
     }
 
@@ -424,37 +497,11 @@ public final class CameraController {
         player.yBodyRotO = this.frozenYaw;
     }
 
-    private void updatePlayerHitResult(Minecraft minecraft, LocalPlayer player) {
-        double blockReach = player.isCreative() ? 5.0D : 4.5D;
-        double entityReach = 3.0D;
-        Vec3 eye = player.getEyePosition(1.0F);
-        Vec3 view = player.getViewVector(1.0F);
-        HitResult blockHit = player.pick(blockReach, 1.0F, false);
-        double blockDistance = blockHit.getLocation().distanceToSqr(eye);
-        Vec3 end = eye.add(view.scale(entityReach));
-        AABB box = player.getBoundingBox().expandTowards(view.scale(entityReach)).inflate(1.0D);
-        EntityHitResult entityHit = ProjectileUtil.getEntityHitResult(
-                player, eye, end, box, entity -> !entity.isSpectator() && entity.isPickable(), entityReach * entityReach);
-        if (entityHit != null && entityHit.getLocation().distanceToSqr(eye) < blockDistance) {
-            minecraft.hitResult = entityHit;
-            minecraft.crosshairPickEntity = entityHit.getEntity();
-        } else {
-            minecraft.hitResult = blockHit;
-            minecraft.crosshairPickEntity = null;
-        }
+    private static float approachAngle(float current, float target, float alpha) {
+        return current + Mth.wrapDegrees(target - current) * alpha;
     }
 
-    private void hardReset() {
-        this.active = false;
-        this.uiHidden = false;
-        this.camera = null;
-        this.velocity = Vec3.ZERO;
-    }
-
-    private void message(Component component) {
-        LocalPlayer player = Minecraft.getInstance().player;
-        if (player != null) {
-            player.displayClientMessage(component, true);
-        }
+    private static void message(LocalPlayer player, Component component) {
+        player.displayClientMessage(component, true);
     }
 }
