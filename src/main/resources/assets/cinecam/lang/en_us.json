@@ -57,7 +57,7 @@
   "cinecam.screen.help.follow.2": "Wheel zooms, W/S sets distance",
   "cinecam.screen.help.follow.3": "A/D swings, R snaps behind",
   "cinecam.screen.help.follow.4": "Space/Shift lifts the pivot",
-  "cinecam.screen.help.follow.5": "Limits stop the mouse at the edge",
+  "cinecam.screen.help.follow.5": "Limits hold the camera and the look",
   "cinecam.screen.help.keys.1": "F6 camera, V control",
   "cinecam.screen.help.keys.2": "C mode, H interface",
   "cinecam.screen.help.keys.3": "N settings, O paths",

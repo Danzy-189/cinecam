@@ -57,7 +57,7 @@
   "cinecam.screen.help.follow.2": "Колесо - зум, W/S - дистанция",
   "cinecam.screen.help.follow.3": "A/D - обвод, R - сразу за спину",
   "cinecam.screen.help.follow.4": "Пробел/Shift - высота подвеса",
-  "cinecam.screen.help.follow.5": "Пределы не дают мыши уйти за край",
+  "cinecam.screen.help.follow.5": "Пределы держат и камеру, и взгляд",
   "cinecam.screen.help.keys.1": "F6 - камера, V - управление",
   "cinecam.screen.help.keys.2": "C - режим, H - интерфейс",
   "cinecam.screen.help.keys.3": "N - настройки, O - пути",
