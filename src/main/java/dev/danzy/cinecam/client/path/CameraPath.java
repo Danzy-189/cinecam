@@ -15,6 +15,13 @@ import net.minecraft.world.phys.Vec3;
  * segment between keyframe {@code i} and {@code i + 1} lasts {@code keyframe(i + 1).duration}
  * seconds. On a looping path the closing segment back to the first keyframe uses the first
  * keyframe's own duration, which is otherwise unused.
+ *
+ * <p>Keyframes are stored in the space named by {@link #anchor()}. For a world path that is
+ * simply world coordinates; for an attached path they are offsets from the camera subject, and
+ * every read has to be converted through an {@link AnchorFrame} first. Use
+ * {@link #sampleWorld(double, AnchorFrame)} and {@link #worldPosition(Vec3, AnchorFrame)}
+ * whenever the result is going to be shown or flown; the plain {@link #sample(double)} stays in
+ * path space and is only useful for shape analysis such as the editor's speed curve.
  */
 public class CameraPath {
     public static final double MIN_SEGMENT = 0.05D;
@@ -26,6 +33,8 @@ public class CameraPath {
     private boolean aimTarget;
     /** 0 = straight lines between keyframes, 0.5 = classic Catmull-Rom, 1 = very round. */
     private double tension = 0.5D;
+    /** Coordinate space the keyframes above are written in. */
+    private PathAnchor anchor = PathAnchor.WORLD;
 
     public CameraPath(String name) {
         this.name = name;
@@ -62,6 +71,91 @@ public class CameraPath {
     public void setTension(double tension) {
         this.tension = Mth.clamp(tension, 0.0D, 1.0D);
     }
+
+    public PathAnchor anchor() {
+        return this.anchor;
+    }
+
+    /**
+     * Moves the path into another coordinate space, rewriting every keyframe so the curve stays
+     * exactly where the operator sees it right now.
+     *
+     * @param frame the subject snapshot to measure against; without one the path is only
+     *     relabelled, because there is nothing to be relative to.
+     * @return true when the keyframes were actually converted.
+     */
+    public boolean rebase(PathAnchor next, AnchorFrame frame) {
+        if (next == null || next == this.anchor) {
+            return false;
+        }
+        if (frame == null || !frame.valid()) {
+            this.anchor = next;
+            return false;
+        }
+        PathAnchor previous = this.anchor;
+        for (Keyframe keyframe : this.keyframes) {
+            Vec3 world = previous.attached()
+                    ? frame.toWorld(keyframe.position, previous.rotates())
+                    : keyframe.position;
+            float yaw = frame.toWorldYaw(keyframe.yaw, previous.rotates());
+            keyframe.position = next.attached() ? frame.toLocal(world, next.rotates()) : world;
+            keyframe.yaw = frame.toLocalYaw(yaw, next.rotates());
+        }
+        this.anchor = next;
+        return true;
+    }
+
+    // ------------------------------------------------------------------
+    // Space conversion
+    // ------------------------------------------------------------------
+
+    /** Converts a stored position into world space. */
+    public Vec3 worldPosition(Vec3 stored, AnchorFrame frame) {
+        if (!this.anchor.attached() || frame == null || !frame.valid()) {
+            return stored;
+        }
+        return frame.toWorld(stored, this.anchor.rotates());
+    }
+
+    /** Converts a world position into the path's own space. */
+    public Vec3 localPosition(Vec3 world, AnchorFrame frame) {
+        if (!this.anchor.attached() || frame == null || !frame.valid()) {
+            return world;
+        }
+        return frame.toLocal(world, this.anchor.rotates());
+    }
+
+    public float worldYaw(float stored, AnchorFrame frame) {
+        if (!this.anchor.rotates() || frame == null || !frame.valid()) {
+            return stored;
+        }
+        return frame.toWorldYaw(stored, true);
+    }
+
+    public float localYaw(float world, AnchorFrame frame) {
+        if (!this.anchor.rotates() || frame == null || !frame.valid()) {
+            return world;
+        }
+        return frame.toLocalYaw(world, true);
+    }
+
+    /** World space pose at {@code time} seconds, ready to be flown. */
+    public PathSample sampleWorld(double time, AnchorFrame frame) {
+        PathSample local = this.sample(time);
+        if (local == null || !this.anchor.attached() || frame == null || !frame.valid()) {
+            return local;
+        }
+        return new PathSample(
+                frame.toWorld(local.position(), this.anchor.rotates()),
+                frame.toWorldYaw(local.yaw(), this.anchor.rotates()),
+                local.pitch(),
+                local.roll(),
+                local.fov());
+    }
+
+    // ------------------------------------------------------------------
+    // Keyframes
+    // ------------------------------------------------------------------
 
     public List<Keyframe> keyframes() {
         return this.keyframes;
@@ -108,6 +202,10 @@ public class CameraPath {
         return target;
     }
 
+    // ------------------------------------------------------------------
+    // Timing
+    // ------------------------------------------------------------------
+
     /** Duration of the segment that ends at keyframe {@code segment + 1}. */
     public double segmentDuration(int segment) {
         int count = this.keyframes.size();
@@ -146,7 +244,28 @@ public class CameraPath {
     }
 
     /**
-     * Samples the pose at {@code time} seconds.
+     * Retimes a keyframe so it is reached at {@code time} seconds, by stretching or squashing
+     * the segment that leads into it. Later keyframes keep their own segment lengths and simply
+     * slide along, which is what dragging a handle on the timeline should feel like.
+     *
+     * @return the time the keyframe actually ended up at.
+     */
+    public double retime(int index, double time) {
+        if (index <= 0 || index >= this.keyframes.size()) {
+            return this.timeOf(index);
+        }
+        double before = this.timeOf(index - 1);
+        Keyframe keyframe = this.keyframes.get(index);
+        keyframe.duration = Mth.clamp(time - before, MIN_SEGMENT, 30.0D);
+        return before + keyframe.duration;
+    }
+
+    // ------------------------------------------------------------------
+    // Sampling
+    // ------------------------------------------------------------------
+
+    /**
+     * Samples the pose at {@code time} seconds, in the path's own coordinate space.
      *
      * @return the pose, or {@code null} when the path has no keyframes.
      */
@@ -213,6 +332,25 @@ public class CameraPath {
         return new PathSample(position, yaw, pitch, roll, fov);
     }
 
+    /**
+     * Metres per second the camera travels at {@code time}, measured on the curve itself.
+     * Used by the editor to draw the speed graph, so easing mistakes are visible before the
+     * take instead of after it.
+     */
+    public double speedAt(double time) {
+        double step = 0.02D;
+        PathSample before = this.sample(Math.max(0.0D, time - step));
+        PathSample after = this.sample(time + step);
+        if (before == null || after == null) {
+            return 0.0D;
+        }
+        double span = Math.min(time + step, this.duration()) - Math.max(0.0D, time - step);
+        if (span <= 1.0E-4D) {
+            return 0.0D;
+        }
+        return after.position().distanceTo(before.position()) / span;
+    }
+
     /** Clamped on open paths, wrapped on looping ones, so end tangents behave. */
     private Keyframe at(int index) {
         int count = this.keyframes.size();
@@ -242,6 +380,7 @@ public class CameraPath {
         copy.loop = this.loop;
         copy.aimTarget = this.aimTarget;
         copy.tension = this.tension;
+        copy.anchor = this.anchor;
         for (Keyframe keyframe : this.keyframes) {
             copy.keyframes.add(keyframe.copy());
         }
@@ -254,6 +393,7 @@ public class CameraPath {
         json.addProperty("loop", this.loop);
         json.addProperty("aimTarget", this.aimTarget);
         json.addProperty("tension", this.tension);
+        json.addProperty("anchor", this.anchor.id());
         JsonArray array = new JsonArray();
         for (Keyframe keyframe : this.keyframes) {
             array.add(keyframe.toJson());
@@ -267,6 +407,7 @@ public class CameraPath {
         path.loop = json.has("loop") && json.get("loop").getAsBoolean();
         path.aimTarget = json.has("aimTarget") && json.get("aimTarget").getAsBoolean();
         path.setTension(json.has("tension") ? json.get("tension").getAsDouble() : 0.5D);
+        path.anchor = PathAnchor.byId(json.has("anchor") ? json.get("anchor").getAsString() : "world");
         if (json.has("keyframes")) {
             for (JsonElement element : json.getAsJsonArray("keyframes")) {
                 if (element.isJsonObject()) {
