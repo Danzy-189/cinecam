@@ -21,8 +21,12 @@ public class CameraSettings {
     public double moveSpeed = 0.35D;
     public double fov = 70.0D;
     public boolean customFov = true;
-    /** 0 = instant camera, 0.95 = very heavy dolly. */
+    /** 0 = instant camera, 0.95 = very heavy dolly. Rotation and the orbit chase only. */
     public float smoothing = 0.45F;
+    /** Seconds the camera takes to reach the commanded speed. Low = punchy start. */
+    public double moveAccel = 0.20D;
+    /** Seconds the camera takes to come to a stop. High = long cinematic glide. */
+    public double moveDecel = 0.45D;
     public float roll = 0.0F;
     public boolean pitchFlight = true;
     public boolean letterbox = false;
@@ -40,6 +44,10 @@ public class CameraSettings {
     public double followDistance = 4.5D;
     /** Resting elevation of the arm, in degrees below the horizon. */
     public float followPitch = 18.0F;
+    /** Highest the rig may climb above the subject, in degrees. The mouse cannot pass it. */
+    public float followPitchUp = 70.0F;
+    /** Lowest the rig may drop below the subject, in degrees. The mouse cannot pass it. */
+    public float followPitchDown = 35.0F;
     /** Sideways offset for an over the shoulder frame. */
     public double followShoulder = 0.0D;
     /** How hard the rig is bolted behind the subject: 0 = free, 1 = perfectly rigid. */
@@ -66,6 +74,8 @@ public class CameraSettings {
         this.fov = 70.0D;
         this.customFov = true;
         this.smoothing = 0.45F;
+        this.moveAccel = 0.20D;
+        this.moveDecel = 0.45D;
         this.roll = 0.0F;
         this.pitchFlight = true;
         this.letterbox = false;
@@ -77,6 +87,8 @@ public class CameraSettings {
         this.aimHeight = 1.4D;
         this.followDistance = 4.5D;
         this.followPitch = 18.0F;
+        this.followPitchUp = 70.0F;
+        this.followPitchDown = 35.0F;
         this.followShoulder = 0.0D;
         this.followStiffness = 0.80F;
         this.followRecenter = 0.35F;
@@ -93,6 +105,8 @@ public class CameraSettings {
         this.moveSpeed = Mth.clamp(this.moveSpeed, 0.02D, 4.0D);
         this.fov = Mth.clamp(this.fov, 10.0D, 130.0D);
         this.smoothing = Mth.clamp(this.smoothing, 0.0F, 0.95F);
+        this.moveAccel = Mth.clamp(this.moveAccel, 0.0D, 3.0D);
+        this.moveDecel = Mth.clamp(this.moveDecel, 0.0D, 3.0D);
         this.roll = Mth.clamp(this.roll, -180.0F, 180.0F);
         this.letterboxRatio = Mth.clamp(this.letterboxRatio, 1.0D, 4.0D);
         this.orbitRadius = Mth.clamp(this.orbitRadius, 1.5D, 64.0D);
@@ -100,7 +114,11 @@ public class CameraSettings {
         this.orbitSpeed = Mth.clamp(this.orbitSpeed, -120.0D, 120.0D);
         this.aimHeight = Mth.clamp(this.aimHeight, -2.0D, 4.0D);
         this.followDistance = Mth.clamp(this.followDistance, 0.5D, 24.0D);
-        this.followPitch = Mth.clamp(this.followPitch, -80.0F, 80.0F);
+        this.followPitchUp = Mth.clamp(this.followPitchUp, 0.0F, 85.0F);
+        this.followPitchDown = Mth.clamp(this.followPitchDown, 0.0F, 85.0F);
+        // The resting angle has to live inside the operator's own limits, otherwise the rig
+        // would start out somewhere the mouse is not allowed to reach.
+        this.followPitch = Mth.clamp(this.followPitch, -this.followPitchDown, this.followPitchUp);
         this.followShoulder = Mth.clamp(this.followShoulder, -3.0D, 3.0D);
         this.followStiffness = Mth.clamp(this.followStiffness, 0.0F, 1.0F);
         this.followRecenter = Mth.clamp(this.followRecenter, 0.0F, 1.0F);
@@ -126,6 +144,8 @@ public class CameraSettings {
         this.fov = readDouble(properties, "fov", this.fov);
         this.customFov = readBoolean(properties, "customFov", this.customFov);
         this.smoothing = (float) readDouble(properties, "smoothing", this.smoothing);
+        this.moveAccel = readDouble(properties, "moveAccel", this.moveAccel);
+        this.moveDecel = readDouble(properties, "moveDecel", this.moveDecel);
         this.roll = (float) readDouble(properties, "roll", this.roll);
         this.pitchFlight = readBoolean(properties, "pitchFlight", this.pitchFlight);
         this.letterbox = readBoolean(properties, "letterbox", this.letterbox);
@@ -137,6 +157,8 @@ public class CameraSettings {
         this.aimHeight = readDouble(properties, "aimHeight", this.aimHeight);
         this.followDistance = readDouble(properties, "followDistance", this.followDistance);
         this.followPitch = (float) readDouble(properties, "followPitch", this.followPitch);
+        this.followPitchUp = (float) readDouble(properties, "followPitchUp", this.followPitchUp);
+        this.followPitchDown = (float) readDouble(properties, "followPitchDown", this.followPitchDown);
         this.followShoulder = readDouble(properties, "followShoulder", this.followShoulder);
         this.followStiffness = (float) readDouble(properties, "followStiffness", this.followStiffness);
         this.followRecenter = (float) readDouble(properties, "followRecenter", this.followRecenter);
@@ -156,6 +178,8 @@ public class CameraSettings {
         properties.setProperty("fov", Double.toString(this.fov));
         properties.setProperty("customFov", Boolean.toString(this.customFov));
         properties.setProperty("smoothing", Float.toString(this.smoothing));
+        properties.setProperty("moveAccel", Double.toString(this.moveAccel));
+        properties.setProperty("moveDecel", Double.toString(this.moveDecel));
         properties.setProperty("roll", Float.toString(this.roll));
         properties.setProperty("pitchFlight", Boolean.toString(this.pitchFlight));
         properties.setProperty("letterbox", Boolean.toString(this.letterbox));
@@ -167,6 +191,8 @@ public class CameraSettings {
         properties.setProperty("aimHeight", Double.toString(this.aimHeight));
         properties.setProperty("followDistance", Double.toString(this.followDistance));
         properties.setProperty("followPitch", Float.toString(this.followPitch));
+        properties.setProperty("followPitchUp", Float.toString(this.followPitchUp));
+        properties.setProperty("followPitchDown", Float.toString(this.followPitchDown));
         properties.setProperty("followShoulder", Double.toString(this.followShoulder));
         properties.setProperty("followStiffness", Float.toString(this.followStiffness));
         properties.setProperty("followRecenter", Float.toString(this.followRecenter));
