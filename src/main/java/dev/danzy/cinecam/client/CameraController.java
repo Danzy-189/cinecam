@@ -61,6 +61,11 @@ public class CameraController {
     private float orbitYaw;
     /** Manual pitch offset away from the resting rig pitch. Recentres to zero. */
     private float orbitPitch;
+    /**
+     * Vertical angle the rig actually used on the last frame, whichever side of the control
+     * switch it came from. Handing the mouse over reads it, so neither direction jumps.
+     */
+    private float followViewPitch;
     /** Smoothed arm length, smoothed pivot height and smoothed forward lead. */
     private double followArm;
     private double followPivotY;
@@ -252,12 +257,35 @@ public class CameraController {
     // Commands bound to keys
     // ------------------------------------------------------------------
 
+    /**
+     * Swaps the mouse and keyboard between the camera and the player.
+     *
+     * <p>In the chase rig the vertical angle is owned by whoever holds the mouse, so the
+     * angle is handed across on every switch: the player's look starts exactly where the
+     * camera was pointing, and coming back turns that look into an orbit offset. Without this
+     * the shot would snap on every press.
+     */
     public void toggleControl() {
         if (!this.active) {
             return;
         }
-        this.cameraControl = !this.cameraControl;
         LocalPlayer player = Minecraft.getInstance().player;
+        boolean toCamera = !this.cameraControl;
+        if (player != null && this.mode == CameraMode.FOLLOW) {
+            float resting = this.clampFollowPitch(this.settings.followPitch);
+            if (toCamera) {
+                float up = Mth.clamp(this.settings.followPitchUp, 0.0F, 85.0F);
+                float down = Mth.clamp(this.settings.followPitchDown, 0.0F, 85.0F);
+                this.orbitPitch = Mth.clamp(this.followViewPitch - resting, -down - resting, up - resting);
+            } else {
+                float handover = this.clampFollowPitch(this.followViewPitch);
+                player.setXRot(handover);
+                player.xRotO = handover;
+                this.orbitPitch = 0.0F;
+                this.followViewPitch = handover;
+            }
+        }
+        this.cameraControl = toCamera;
         if (player != null) {
             if (this.cameraControl) {
                 this.freezePlayer(player);
@@ -311,6 +339,13 @@ public class CameraController {
             // In a chase rig recentering means "snap straight behind the back", not
             // "teleport onto the player".
             this.resetFollowRig(subject);
+            if (!this.cameraControl && subject == player) {
+                // The player owns the vertical angle right now, so level their look instead.
+                float resting = this.clampFollowPitch(this.settings.followPitch);
+                player.setXRot(resting);
+                player.xRotO = resting;
+                this.followViewPitch = resting;
+            }
             return;
         }
         this.position = player.getEyePosition(1.0F);
@@ -941,6 +976,29 @@ public class CameraController {
     }
 
     /**
+     * Vertical angle for the chase rig while the player is the one being driven.
+     *
+     * <p>Steering a character in third person means the mouse points the camera, so the rig
+     * simply takes the player's own look angle. The same up and down limits apply, and the
+     * look itself is clamped rather than only the camera: if the head were allowed past the
+     * stop, the crosshair would keep climbing while the picture stayed put, and every hit
+     * would land somewhere other than where it was aimed.
+     */
+    private float drivenPitch(LocalPlayer player) {
+        float limited = this.clampFollowPitch(player.getXRot());
+        if (player.getXRot() != limited) {
+            player.setXRot(limited);
+        }
+        float previous = this.clampFollowPitch(player.xRotO);
+        if (player.xRotO != previous) {
+            // Keeps the render interpolation inside the limit too, so the stop does not
+            // shimmer while the mouse is pushed against it.
+            player.xRotO = previous;
+        }
+        return limited;
+    }
+
+    /**
      * Tick half of the chase rig: keyboard input, the manual hold timer and the throttle
      * factor that drives both the look ahead and how briskly the camera straightens up.
      */
@@ -1052,14 +1110,24 @@ public class CameraController {
         this.followLead += (wantedLead - this.followLead) * frameAlpha(0.09F, step);
 
         float yawTotal = Mth.wrapDegrees(this.rigYaw + this.orbitYaw);
-        float pitchTotal = this.clampFollowPitch(config.followPitch + this.orbitPitch);
+        // 5. Vertical angle. Two owners, one pair of limits: the mouse feeds the orbit offset
+        // while the camera is being flown, and the player's own look drives it while the
+        // character is being steered.
+        float pitchTotal;
+        if (!this.cameraControl && subject == player) {
+            pitchTotal = this.drivenPitch(player);
+            this.orbitPitch = 0.0F;
+        } else {
+            pitchTotal = this.clampFollowPitch(config.followPitch + this.orbitPitch);
+        }
+        this.followViewPitch = pitchTotal;
         Vec3 look = Vec3.directionFromRotation(pitchTotal, yawTotal);
         Vec3 side = Vec3.directionFromRotation(0.0F, yawTotal + 90.0F);
         Vec3 lead = Vec3.directionFromRotation(0.0F, this.rigYaw).scale(this.followLead);
         Vec3 pivot = new Vec3(subjectX, this.followPivotY, subjectZ).add(lead);
         Vec3 anchor = pivot.add(side.scale(config.followShoulder));
 
-        // 5. Spring arm, pulled in by walls and eased back out when they are gone.
+        // 6. Spring arm, pulled in by walls and eased back out when they are gone.
         double wanted = config.followDistance + followPadding(subject);
         if (config.followCollision) {
             wanted = clipArm(minecraft.level, subject, anchor, look, wanted);
@@ -1072,7 +1140,7 @@ public class CameraController {
         this.position = desired;
         this.aimPoint = pivot;
 
-        // 6. Frame the pivot exactly. With no shoulder offset this is the rig angle itself,
+        // 7. Frame the pivot exactly. With no shoulder offset this is the rig angle itself,
         // so the subject is pinned dead centre instead of sliding around.
         Vec3 aim = pivot.subtract(desired);
         double horizontal = Math.sqrt(aim.x * aim.x + aim.z * aim.z);
@@ -1156,6 +1224,7 @@ public class CameraController {
         this.rigYaw = this.subjectFacing(subject);
         this.orbitYaw = 0.0F;
         this.orbitPitch = 0.0F;
+        this.followViewPitch = this.clampFollowPitch(this.settings.followPitch);
         this.followArm = this.settings.followDistance + followPadding(subject);
         this.followPivotY = subject.getY() + this.aimHeightFor(subject);
         this.followLead = 0.0D;
@@ -1183,6 +1252,7 @@ public class CameraController {
         this.rigYaw = this.subjectFacing(subject);
         this.orbitYaw = Mth.wrapDegrees(worldYaw - this.rigYaw);
         this.orbitPitch = Mth.clamp(worldPitch - resting, -down - resting, up - resting);
+        this.followViewPitch = this.clampFollowPitch(resting + this.orbitPitch);
         this.settings.followDistance = Mth.clamp(length - followPadding(subject), 0.5D, 24.0D);
         this.followArm = length;
         this.followPivotY = anchor.y;
@@ -1220,6 +1290,11 @@ public class CameraController {
                 }
                 this.restorePlayerRotation(player);
             }
+        } else if (this.mode == CameraMode.FOLLOW && this.followReady && !this.pathPreview
+                && !PathManager.get().isPlaying() && this.target.resolve(player) == player) {
+            // Second line of defence for the driven player: this fires after the mouse has
+            // been applied for the frame, so the limit holds even if the rig was not solved.
+            this.drivenPitch(player);
         }
         float partialTick = (float) event.getPartialTick();
         if (this.mode == CameraMode.FOLLOW && this.followReady && !PathManager.get().isPlaying()) {
