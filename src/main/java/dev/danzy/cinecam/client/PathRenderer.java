@@ -2,6 +2,7 @@ package dev.danzy.cinecam.client;
 
 import com.mojang.blaze3d.vertex.PoseStack;
 import com.mojang.blaze3d.vertex.VertexConsumer;
+import dev.danzy.cinecam.client.path.AnchorFrame;
 import dev.danzy.cinecam.client.path.CameraPath;
 import dev.danzy.cinecam.client.path.Keyframe;
 import dev.danzy.cinecam.client.path.PathManager;
@@ -16,14 +17,17 @@ import org.joml.Matrix4f;
 
 /**
  * Draws the spline and its keyframes straight into the world so a flight can be laid out by
- * eye. The guides disappear during playback and whenever the interface is hidden, so they can
- * never end up in a recording.
+ * eye. Attached paths are converted through the live anchor frame first, which means the
+ * guides ride along with the boat or the horse exactly like the finished shot will. The guides
+ * disappear during playback and whenever the interface is hidden, so they can never end up in a
+ * recording.
  */
 public final class PathRenderer {
     private static final int SPLINE = 0xCC4DD2FF;
     private static final int FRAME = 0xCCE8EEF5;
     private static final int FIRST = 0xCC7BE38B;
     private static final int SELECTED = 0xFFFFC24D;
+    private static final int ANCHOR = 0xAAFFC24D;
     private static final int SAMPLES_PER_SECOND = 12;
     private static final int MIN_SAMPLES = 24;
     private static final int MAX_SAMPLES = 600;
@@ -49,6 +53,7 @@ public final class PathRenderer {
         }
 
         Minecraft minecraft = Minecraft.getInstance();
+        AnchorFrame anchor = controller.anchorFrame();
         Vec3 camera = event.getCamera().getPosition();
         PoseStack pose = event.getPoseStack();
         pose.pushPose();
@@ -63,7 +68,7 @@ public final class PathRenderer {
             int steps = Mth.clamp((int) (total * SAMPLES_PER_SECOND), MIN_SAMPLES, MAX_SAMPLES);
             Vec3 previous = null;
             for (int step = 0; step <= steps; step++) {
-                PathSample sample = path.sample(total * step / steps);
+                PathSample sample = path.sampleWorld(total * step / steps, anchor);
                 if (sample == null) {
                     break;
                 }
@@ -75,14 +80,29 @@ public final class PathRenderer {
         }
 
         int selected = paths.selected();
+        Vec3 firstPosition = null;
         for (int index = 0; index < path.size(); index++) {
             Keyframe keyframe = path.get(index);
+            Vec3 position = path.worldPosition(keyframe.position, anchor);
+            float yaw = path.worldYaw(keyframe.yaw, anchor);
             boolean isSelected = index == selected;
             int color = isSelected ? SELECTED : (index == 0 ? FIRST : FRAME);
-            box(lines, matrix, keyframe.position, isSelected ? 0.22D : 0.14D, color);
+            box(lines, matrix, position, isSelected ? 0.22D : 0.14D, color);
             // A short whisker showing where that frame looks.
-            line(lines, matrix, keyframe.position,
-                    keyframe.position.add(keyframe.look().scale(isSelected ? 1.2D : 0.7D)), color);
+            line(lines, matrix, position,
+                    position.add(Vec3.directionFromRotation(keyframe.pitch, yaw).scale(isSelected ? 1.2D : 0.7D)),
+                    color);
+            if (index == 0) {
+                firstPosition = position;
+            }
+        }
+
+        // An attached path hangs off the subject, so show what it hangs from.
+        if (path.anchor().attached() && anchor.valid()) {
+            box(lines, matrix, anchor.origin(), 0.18D, ANCHOR);
+            if (firstPosition != null) {
+                line(lines, matrix, anchor.origin(), firstPosition, ANCHOR);
+            }
         }
 
         buffers.endBatch(RenderType.lines());

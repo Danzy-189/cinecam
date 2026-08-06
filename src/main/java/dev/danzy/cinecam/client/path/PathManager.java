@@ -4,7 +4,12 @@ import java.util.List;
 import net.minecraft.util.Mth;
 import net.minecraft.world.phys.Vec3;
 
-/** Holds the path being edited plus its playback state. Client side only. */
+/**
+ * Holds the path being edited plus its playback state. Client side only.
+ *
+ * <p>Every call that crosses between world space and path space takes an {@link AnchorFrame},
+ * so an attached path always converts against one consistent snapshot of the subject.
+ */
 public final class PathManager {
     private static final PathManager INSTANCE = new PathManager();
 
@@ -44,26 +49,39 @@ public final class PathManager {
         return this.selected < 0 || this.selected >= this.path.size() ? null : this.path.get(this.selected);
     }
 
+    /** Time the selected keyframe is reached at, or 0 when nothing is selected. */
+    public double selectedTime() {
+        return this.selected < 0 ? 0.0D : this.path.timeOf(this.selected);
+    }
+
     // ------------------------------------------------------------------
     // Editing
     // ------------------------------------------------------------------
 
-    /** Appends a pose and selects it. */
-    public int capture(Vec3 position, float yaw, float pitch, float roll, double fov, double duration) {
+    /** Switches the coordinate space, keeping the curve visually where it is. */
+    public boolean setAnchor(PathAnchor anchor, AnchorFrame frame) {
+        return this.path.rebase(anchor, frame);
+    }
+
+    /** Appends a world space pose and selects it. */
+    public int capture(Vec3 position, float yaw, float pitch, float roll, double fov, double duration,
+            AnchorFrame frame) {
         Easing easing = this.path.isEmpty() ? Easing.IN_OUT : this.path.get(this.path.size() - 1).easing;
-        this.path.add(new Keyframe(position, yaw, pitch, roll, fov, Math.max(CameraPath.MIN_SEGMENT, duration), easing));
+        this.path.add(new Keyframe(this.path.localPosition(position, frame), this.path.localYaw(yaw, frame),
+                pitch, roll, fov, Math.max(CameraPath.MIN_SEGMENT, duration), easing));
         this.selected = this.path.size() - 1;
         return this.selected;
     }
 
-    /** Rewrites the selected keyframe with a new pose, keeping its timing. */
-    public boolean replaceSelected(Vec3 position, float yaw, float pitch, float roll, double fov) {
+    /** Rewrites the selected keyframe with a new world space pose, keeping its timing. */
+    public boolean replaceSelected(Vec3 position, float yaw, float pitch, float roll, double fov,
+            AnchorFrame frame) {
         Keyframe keyframe = this.selectedKeyframe();
         if (keyframe == null) {
             return false;
         }
-        keyframe.position = position;
-        keyframe.yaw = yaw;
+        keyframe.position = this.path.localPosition(position, frame);
+        keyframe.yaw = this.path.localYaw(yaw, frame);
         keyframe.pitch = pitch;
         keyframe.roll = roll;
         keyframe.fov = fov;
@@ -86,6 +104,14 @@ public final class PathManager {
         if (this.selected >= 0) {
             this.selected = this.path.move(this.selected, offset);
         }
+    }
+
+    /** Drags the selected keyframe along the timeline. */
+    public double retimeSelected(double seconds) {
+        if (this.selected <= 0) {
+            return 0.0D;
+        }
+        return this.path.retime(this.selected, seconds);
     }
 
     public void clear() {
@@ -112,7 +138,8 @@ public final class PathManager {
     }
 
     public void seek(double seconds) {
-        this.time = Math.max(0.0D, seconds);
+        double total = this.path.duration();
+        this.time = total <= 0.0D ? 0.0D : Mth.clamp(seconds, 0.0D, total);
     }
 
     public boolean play() {
@@ -120,6 +147,21 @@ public final class PathManager {
             return false;
         }
         this.time = 0.0D;
+        this.playing = true;
+        this.justFinished = false;
+        return true;
+    }
+
+    /** Starts from wherever the scrub head is parked instead of from the top. */
+    public boolean playFrom(double seconds) {
+        if (!this.canPlay()) {
+            return false;
+        }
+        this.seek(seconds);
+        double total = this.path.duration();
+        if (!this.path.loop() && this.time >= total - 1.0E-4D) {
+            this.time = 0.0D;
+        }
         this.playing = true;
         this.justFinished = false;
         return true;
@@ -136,16 +178,17 @@ public final class PathManager {
     }
 
     /**
-     * Advances playback and returns the pose for this tick.
+     * Advances playback and returns the world space pose for this tick.
      *
      * @param seconds wall clock seconds to advance, already scaled by the playback speed.
+     * @param frame the subject snapshot for attached paths.
      * @return the pose to apply, or {@code null} when nothing is playing.
      */
-    public PathSample advance(double seconds) {
+    public PathSample advance(double seconds, AnchorFrame frame) {
         if (!this.playing) {
             return null;
         }
-        PathSample sample = this.path.sample(this.time);
+        PathSample sample = this.path.sampleWorld(this.time, frame);
         if (sample == null) {
             this.playing = false;
             return null;
@@ -156,10 +199,15 @@ public final class PathManager {
             this.time = total;
             this.playing = false;
             this.justFinished = true;
-            PathSample last = this.path.sample(total);
+            PathSample last = this.path.sampleWorld(total, frame);
             return last == null ? sample : last;
         }
         return sample;
+    }
+
+    /** World space pose at an arbitrary time, used while scrubbing the timeline. */
+    public PathSample sampleAt(double seconds, AnchorFrame frame) {
+        return this.path.sampleWorld(seconds, frame);
     }
 
     /** Progress through the current playback, 0..1. */
