@@ -17,24 +17,31 @@ import net.minecraft.client.gui.screens.Screen;
 import net.minecraft.network.chat.CommonComponents;
 import net.minecraft.network.chat.Component;
 
-/** Keyframe editor: the shot list on the left, one frame in the middle, the path on the right. */
+/**
+ * The path editor.
+ *
+ * <p>The whole top of the panel is a timeline: keyframes sit on it as handles, they are dragged
+ * to retime a move, the empty track scrubs the shot and the speed graph underneath shows what
+ * the audience will actually feel. Everything below is the detail of whatever is selected.
+ */
 public class PathScreen extends Screen {
-    private static final int PANEL_WIDTH = 480;
+    private static final int PANEL_WIDTH = 460;
     private static final int PANEL_HEIGHT = 256;
-    private static final int COLUMN_WIDTH = 150;
+    private static final int COLUMN_WIDTH = 140;
     private static final int COLUMN_ONE = 10;
-    private static final int COLUMN_TWO = 165;
-    private static final int COLUMN_THREE = 320;
-    private static final int ROWS = 7;
+    private static final int COLUMN_TWO = 160;
+    private static final int COLUMN_THREE = 310;
+    private static final int TIMELINE_HEIGHT = 46;
 
     private final Screen parent;
     private int left;
     private int top;
-    private int page;
     private boolean initialized;
     private String fileName = "";
     private int fileCursor = -1;
     private EditBox nameBox;
+    /** Kept between rebuilds so a drag survives the widgets being recreated under it. */
+    private TimelineWidget timeline;
     private Component status = Component.empty();
 
     public PathScreen() {
@@ -60,146 +67,135 @@ public class PathScreen extends Screen {
         if (!this.initialized) {
             this.initialized = true;
             this.fileName = path.name();
-            if (paths.selected() >= 0) {
-                this.page = paths.selected() / ROWS;
-            }
-        }
-        int pages = Math.max(1, (path.size() + ROWS - 1) / ROWS);
-        this.page = Math.max(0, Math.min(this.page, pages - 1));
-
-        // ---- Column one: the shot list ----
-        int rowY = this.top + 46;
-        for (int row = 0; row < ROWS; row++) {
-            int index = this.page * ROWS + row;
-            if (index >= path.size()) {
-                break;
-            }
-            Keyframe keyframe = path.get(index);
-            Component label = Component.literal("#" + (index + 1) + "  "
-                            + String.format(Locale.ROOT, "%.1f", keyframe.duration) + "  ")
-                    .append(keyframe.easing.title());
-            Button button = Button.builder(label, pressed -> {
-                PathManager.get().select(index);
-                this.rebuildWidgets();
-            }).bounds(columnOne, rowY, COLUMN_WIDTH, 18).build();
-            button.active = index != paths.selected();
-            this.addRenderableWidget(button);
-            rowY += 20;
         }
 
-        int pagerY = this.top + 188;
-        Button previousPage = Button.builder(Component.literal("<"), pressed -> {
-            this.page = Math.max(0, this.page - 1);
-            this.rebuildWidgets();
-        }).bounds(columnOne, pagerY, 18, 18).build();
-        previousPage.active = this.page > 0;
-        this.addRenderableWidget(previousPage);
+        // ---- Timeline ----
+        int timelineWidth = PANEL_WIDTH - COLUMN_ONE * 2;
+        if (this.timeline == null) {
+            this.timeline = new TimelineWidget(columnOne, this.top + 34, timelineWidth, TIMELINE_HEIGHT,
+                    this.font, this::onTimelineEdit);
+        } else {
+            this.timeline.setPosition(columnOne, this.top + 34);
+        }
+        this.addRenderableWidget(this.timeline);
 
-        int lastPage = pages - 1;
-        Button nextPage = Button.builder(Component.literal(">"), pressed -> {
-            this.page = Math.min(lastPage, this.page + 1);
-            this.rebuildWidgets();
-        }).bounds(columnOne + COLUMN_WIDTH - 18, pagerY, 18, 18).build();
-        nextPage.active = this.page < lastPage;
-        this.addRenderableWidget(nextPage);
-
-        // ---- Column two: the selected frame ----
+        // ---- Column one: the selected keyframe ----
         Keyframe selected = paths.selectedKeyframe();
         if (selected != null) {
-            int frameY = this.top + 46;
-            this.addRenderableWidget(new CineSlider(columnTwo, frameY, COLUMN_WIDTH, 18, "cinecam.path.duration",
-                    0.1D, 20.0D, selected.duration, 1.0D, "%.1f", value -> selected.duration = value));
+            int frameY = this.top + 98;
+            this.addRenderableWidget(new CineSlider(columnOne, frameY, COLUMN_WIDTH, 18, "cinecam.path.duration",
+                    0.1D, 20.0D, selected.duration, 1.0D, "%.1f", value -> {
+                        selected.duration = value;
+                        this.timeline.refresh();
+                    }));
             frameY += 20;
             this.addRenderableWidget(Button.builder(easingLabel(selected), pressed -> {
                 selected.easing = selected.easing.next();
+                this.timeline.refresh();
                 this.rebuildWidgets();
-            }).bounds(columnTwo, frameY, COLUMN_WIDTH, 18).build());
+            }).bounds(columnOne, frameY, COLUMN_WIDTH, 18).build());
             frameY += 20;
             this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.update"), pressed -> {
                 CameraController camera = CameraController.get();
                 PathManager.get().replaceSelected(camera.getPosition(), camera.getYaw(), camera.getPitch(),
-                        camera.getRoll(), camera.currentFov());
+                        camera.getRoll(), camera.currentFov(), camera.anchorFrame());
                 this.status = Component.translatable("cinecam.path.status.updated");
+                this.timeline.refresh();
                 this.rebuildWidgets();
-            }).bounds(columnTwo, frameY, COLUMN_WIDTH, 18).build());
-            frameY += 20;
-            this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.goto"), pressed ->
-                    CameraController.get().applyKeyframe(PathManager.get().selectedKeyframe()))
-                    .bounds(columnTwo, frameY, COLUMN_WIDTH, 18).build());
+            }).bounds(columnOne, frameY, COLUMN_WIDTH, 18).build());
             frameY += 20;
             int half = (COLUMN_WIDTH - 4) / 2;
             Button moveUp = Button.builder(Component.literal("\u25B2"), pressed -> {
                 PathManager.get().moveSelected(-1);
-                this.page = Math.max(0, PathManager.get().selected() / ROWS);
+                this.timeline.refresh();
                 this.rebuildWidgets();
-            }).bounds(columnTwo, frameY, half, 18).build();
+            }).bounds(columnOne, frameY, half, 18).build();
             moveUp.active = paths.selected() > 0;
             this.addRenderableWidget(moveUp);
             Button moveDown = Button.builder(Component.literal("\u25BC"), pressed -> {
                 PathManager.get().moveSelected(1);
-                this.page = Math.max(0, PathManager.get().selected() / ROWS);
+                this.timeline.refresh();
                 this.rebuildWidgets();
-            }).bounds(columnTwo + COLUMN_WIDTH - half, frameY, half, 18).build();
+            }).bounds(columnOne + COLUMN_WIDTH - half, frameY, half, 18).build();
             moveDown.active = paths.selected() < path.size() - 1;
             this.addRenderableWidget(moveDown);
             frameY += 20;
+            this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.goto_short"), pressed ->
+                    CameraController.get().applyKeyframe(PathManager.get().selectedKeyframe()))
+                    .bounds(columnOne, frameY, half, 18).build());
             this.addRenderableWidget(Button.builder(
-                    Component.translatable("cinecam.path.delete").withStyle(ChatFormatting.RED), pressed -> {
+                    Component.translatable("cinecam.path.delete_short").withStyle(ChatFormatting.RED), pressed -> {
                         PathManager.get().removeSelected();
                         this.status = Component.translatable("cinecam.path.status.removed");
+                        this.timeline.refresh();
                         this.rebuildWidgets();
-                    }).bounds(columnTwo, frameY, COLUMN_WIDTH, 18).build());
+                    }).bounds(columnOne + COLUMN_WIDTH - half, frameY, half, 18).build());
         }
 
-        // ---- Column three: the path itself ----
-        int pathY = this.top + 46;
+        // ---- Column two: the path itself ----
+        int pathY = this.top + 98;
         Button playButton = Button.builder(paths.isPlaying()
                         ? Component.translatable("cinecam.path.stop").withStyle(ChatFormatting.RED)
                         : Component.translatable("cinecam.path.play").withStyle(ChatFormatting.GREEN),
                 pressed -> {
                     CameraController.get().togglePlayback();
                     this.rebuildWidgets();
-                }).bounds(columnThree, pathY, COLUMN_WIDTH, 18).build();
+                }).bounds(columnTwo, pathY, COLUMN_WIDTH, 18).build();
         playButton.active = !path.isEmpty();
         this.addRenderableWidget(playButton);
         pathY += 20;
-        this.addRenderableWidget(this.toggle(columnThree, pathY, "cinecam.path.loop",
+        this.addRenderableWidget(Button.builder(anchorLabel(path), pressed -> {
+            // Re-anchoring keeps the curve where it looks right now and only changes what it
+            // is measured against, so switching space never scrambles a finished shot.
+            PathManager.get().setAnchor(path.anchor().next(), CameraController.get().anchorFrame());
+            this.timeline.refresh();
+            this.rebuildWidgets();
+        }).bounds(columnTwo, pathY, COLUMN_WIDTH, 18).build());
+        pathY += 20;
+        this.addRenderableWidget(this.toggle(columnTwo, pathY, "cinecam.path.loop",
                 path::loop, () -> path.setLoop(!path.loop())));
         pathY += 20;
-        this.addRenderableWidget(this.toggle(columnThree, pathY, "cinecam.path.aim",
+        this.addRenderableWidget(this.toggle(columnTwo, pathY, "cinecam.path.aim",
                 path::aimTarget, () -> path.setAimTarget(!path.aimTarget())));
         pathY += 20;
-        this.addRenderableWidget(this.toggle(columnThree, pathY, "cinecam.opt.path_guides",
+        this.addRenderableWidget(new CineSlider(columnTwo, pathY, COLUMN_WIDTH, 18, "cinecam.path.tension",
+                0.0D, 1.0D, path.tension(), 100.0D, "%.0f%%", value -> {
+                    path.setTension(value);
+                    this.timeline.refresh();
+                }));
+
+        // ---- Column three: playback and files ----
+        int fileY = this.top + 98;
+        this.addRenderableWidget(this.toggle(columnThree, fileY, "cinecam.opt.path_guides",
                 () -> settings.pathGuides, () -> settings.pathGuides = !settings.pathGuides));
-        pathY += 20;
-        this.addRenderableWidget(new CineSlider(columnThree, pathY, COLUMN_WIDTH, 18, "cinecam.path.tension",
-                0.0D, 1.0D, path.tension(), 100.0D, "%.0f%%", path::setTension));
-        pathY += 20;
-        this.addRenderableWidget(new CineSlider(columnThree, pathY, COLUMN_WIDTH, 18, "cinecam.opt.path_speed",
+        fileY += 20;
+        this.addRenderableWidget(new CineSlider(columnThree, fileY, COLUMN_WIDTH, 18, "cinecam.opt.path_speed",
                 0.1D, 3.0D, settings.pathSpeed, 1.0D, "%.2fx", value -> settings.pathSpeed = value));
-        pathY += 22;
-        this.nameBox = new EditBox(this.font, columnThree, pathY, COLUMN_WIDTH, 18,
+        fileY += 20;
+        this.addRenderableWidget(new CineSlider(columnThree, fileY, COLUMN_WIDTH, 18, "cinecam.opt.path_default",
+                0.1D, 10.0D, settings.pathDefaultDuration, 1.0D, "%.1f",
+                value -> settings.pathDefaultDuration = value));
+        fileY += 20;
+        this.nameBox = new EditBox(this.font, columnThree, fileY, COLUMN_WIDTH, 18,
                 Component.translatable("cinecam.path.name"));
         this.nameBox.setMaxLength(32);
         this.nameBox.setValue(this.fileName);
         this.nameBox.setResponder(value -> this.fileName = value);
         this.addRenderableWidget(this.nameBox);
-        pathY += 22;
+        fileY += 20;
         int third = (COLUMN_WIDTH - 6) / 3;
         this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.save"), pressed -> {
             boolean saved = PathManager.get().save(this.fileName);
             this.status = Component.translatable(saved ? "cinecam.path.status.saved" : "cinecam.path.status.failed");
-        }).bounds(columnThree, pathY, third, 18).build());
+        }).bounds(columnThree, fileY, third, 18).build());
         this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.load"), pressed -> {
             boolean loaded = PathManager.get().load(this.fileName);
             this.status = Component.translatable(loaded ? "cinecam.path.status.loaded" : "cinecam.path.status.missing");
-            if (loaded) {
-                this.page = 0;
-            }
+            this.timeline.refresh();
             this.rebuildWidgets();
-        }).bounds(columnThree + third + 3, pathY, third, 18).build());
+        }).bounds(columnThree + third + 3, fileY, third, 18).build());
         this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.files"), pressed ->
-                this.cycleFiles()).bounds(columnThree + (third + 3) * 2, pathY, third, 18).build());
+                this.cycleFiles()).bounds(columnThree + (third + 3) * 2, fileY, third, 18).build());
 
         // ---- Footer ----
         int footerY = this.top + 226;
@@ -210,18 +206,24 @@ public class PathScreen extends Screen {
             } else {
                 camera.captureKeyframe();
                 this.status = Component.translatable("cinecam.path.status.added");
-                this.page = Math.max(0, (PathManager.get().path().size() - 1) / ROWS);
             }
+            this.timeline.refresh();
             this.rebuildWidgets();
         }).bounds(columnOne, footerY, COLUMN_WIDTH, 20).build());
         this.addRenderableWidget(Button.builder(Component.translatable("cinecam.path.clear"), pressed -> {
             PathManager.get().clear();
-            this.page = 0;
             this.status = Component.translatable("cinecam.path.status.cleared");
+            this.timeline.refresh();
             this.rebuildWidgets();
         }).bounds(columnTwo, footerY, COLUMN_WIDTH, 20).build());
         this.addRenderableWidget(Button.builder(CommonComponents.GUI_DONE, pressed -> this.onClose())
                 .bounds(columnThree, footerY, COLUMN_WIDTH, 20).build());
+    }
+
+    /** Called by the timeline when a handle was selected or retimed. */
+    private void onTimelineEdit() {
+        this.status = Component.empty();
+        this.rebuildWidgets();
     }
 
     private void cycleFiles() {
@@ -242,6 +244,13 @@ public class PathScreen extends Screen {
         return Component.translatable("cinecam.path.easing")
                 .append(Component.literal(": "))
                 .append(keyframe.easing.title());
+    }
+
+    private static Component anchorLabel(CameraPath path) {
+        return Component.translatable("cinecam.path.anchor")
+                .append(Component.literal(": "))
+                .append(path.anchor().title().copy().withStyle(
+                        path.anchor().attached() ? ChatFormatting.AQUA : ChatFormatting.GRAY));
     }
 
     private Button toggle(int x, int y, String key, BooleanSupplier getter, Runnable toggler) {
@@ -275,43 +284,40 @@ public class PathScreen extends Screen {
         graphics.drawString(this.font, total,
                 this.left + PANEL_WIDTH - 10 - this.font.width(total), this.top + 21, Theme.TEXT, false);
 
-        graphics.fill(this.left + COLUMN_ONE, this.top + 33, this.left + PANEL_WIDTH - 10, this.top + 34, Theme.BORDER);
-        graphics.drawString(this.font, Component.translatable("cinecam.path.section.frames"),
-                this.left + COLUMN_ONE, this.top + 37, Theme.TEXT_DIM, false);
+        graphics.fill(this.left + COLUMN_ONE, this.top + 84, this.left + PANEL_WIDTH - 10, this.top + 85,
+                Theme.BORDER);
         graphics.drawString(this.font, Component.translatable("cinecam.path.section.frame"),
-                this.left + COLUMN_TWO, this.top + 37, Theme.TEXT_DIM, false);
+                this.left + COLUMN_ONE, this.top + 88, Theme.TEXT_DIM, false);
         graphics.drawString(this.font, Component.translatable("cinecam.path.section.path"),
-                this.left + COLUMN_THREE, this.top + 37, Theme.ACCENT, false);
+                this.left + COLUMN_TWO, this.top + 88, Theme.ACCENT, false);
+        graphics.drawString(this.font, Component.translatable("cinecam.path.section.file"),
+                this.left + COLUMN_THREE, this.top + 88, Theme.TEXT_DIM, false);
 
-        if (path.isEmpty()) {
-            graphics.drawString(this.font, Component.translatable("cinecam.path.empty"),
-                    this.left + COLUMN_ONE, this.top + 50, Theme.TEXT_DIM, false);
-        } else {
-            int pages = Math.max(1, (path.size() + ROWS - 1) / ROWS);
-            Component pageLabel = Component.literal((this.page + 1) + " / " + pages);
-            int centered = this.left + COLUMN_ONE + COLUMN_WIDTH / 2 - this.font.width(pageLabel) / 2;
-            graphics.drawString(this.font, pageLabel, centered, this.top + 193, Theme.TEXT_DIM, false);
+        if (paths.selectedKeyframe() == null) {
+            graphics.drawString(this.font, Component.translatable("cinecam.path.no_selection"),
+                    this.left + COLUMN_ONE, this.top + 102, Theme.TEXT_DIM, false);
         }
 
-        Keyframe selected = paths.selectedKeyframe();
-        if (selected == null) {
-            graphics.drawString(this.font, Component.translatable("cinecam.path.no_selection"),
-                    this.left + COLUMN_TWO, this.top + 50, Theme.TEXT_DIM, false);
-        } else {
-            int infoY = this.top + 170;
-            graphics.drawString(this.font, Component.literal(String.format(Locale.ROOT, "XYZ  %.1f  %.1f  %.1f",
-                            selected.position.x, selected.position.y, selected.position.z)),
-                    this.left + COLUMN_TWO, infoY, Theme.TEXT_DIM, false);
-            graphics.drawString(this.font, Component.literal(String.format(Locale.ROOT, "YAW %.1f   PITCH %.1f",
-                            selected.yaw, selected.pitch)),
-                    this.left + COLUMN_TWO, infoY + 10, Theme.TEXT_DIM, false);
-            graphics.drawString(this.font, Component.literal(String.format(Locale.ROOT, "FOV %.0f   ROLL %.1f",
-                            selected.fov, selected.roll)),
-                    this.left + COLUMN_TWO, infoY + 20, Theme.TEXT_DIM, false);
+        // Detail line: the frame under the cursor wins over the selected one, so hovering the
+        // timeline reads out the whole shot without clicking anything.
+        int detail = this.timeline != null && this.timeline.hovered() >= 0
+                ? this.timeline.hovered()
+                : paths.selected();
+        if (detail >= 0 && detail < path.size()) {
+            Keyframe keyframe = path.get(detail);
+            String space = path.anchor().attached() ? "REL" : "XYZ";
+            String line = String.format(Locale.ROOT,
+                    "#%d  %s %.1f %.1f %.1f   Y %.0f  P %.0f  R %.0f   FOV %.0f   %.1fs",
+                    detail + 1, space, keyframe.position.x, keyframe.position.y, keyframe.position.z,
+                    keyframe.yaw, keyframe.pitch, keyframe.roll, keyframe.fov, keyframe.duration);
+            graphics.drawString(this.font, line, this.left + COLUMN_ONE, this.top + 202, Theme.TEXT_DIM, false);
         }
 
         if (!this.status.getString().isEmpty()) {
-            graphics.drawString(this.font, this.status, this.left + COLUMN_ONE, this.top + 210, Theme.GREEN, false);
+            graphics.drawString(this.font, this.status, this.left + COLUMN_ONE, this.top + 213, Theme.GREEN, false);
+        } else {
+            graphics.drawString(this.font, Component.translatable("cinecam.path.hint"),
+                    this.left + COLUMN_ONE, this.top + 213, Theme.TEXT_DIM, false);
         }
     }
 
