@@ -1,5 +1,7 @@
 package dev.danzy.cinecam.client;
 
+import dev.danzy.cinecam.client.path.AnchorFrame;
+import dev.danzy.cinecam.client.path.CameraPath;
 import dev.danzy.cinecam.client.path.Keyframe;
 import dev.danzy.cinecam.client.path.PathManager;
 import dev.danzy.cinecam.client.path.PathSample;
@@ -71,6 +73,14 @@ public class CameraController {
 
     /** Field of view dictated by the path while it plays, or -1. */
     private double playbackFov = -1.0D;
+    /**
+     * True while the camera is parked on a keyframe or on a scrubbed point of the path. The
+     * chase rig stands down in that state, otherwise it would drag the camera off the pose the
+     * operator is inspecting.
+     */
+    private boolean pathPreview;
+    /** Partial tick of the frame being rendered, so anchors can be interpolated smoothly. */
+    private float framePartial = 1.0F;
 
     private float yaw;
     private float pitch;
@@ -183,6 +193,7 @@ public class CameraController {
         this.orbitAngle = Mth.wrapDegrees(subject.getYRot() + 180.0F);
         this.subjectLastPos = null;
         this.subjectMotion = Vec3.ZERO;
+        this.pathPreview = false;
         this.resetFollowRig(subject);
         this.aimPoint = this.aimPointOf(subject);
         this.freezePlayer(player);
@@ -205,6 +216,7 @@ public class CameraController {
         this.cameraControl = false;
         this.uiHidden = false;
         this.followReady = false;
+        this.pathPreview = false;
         this.camera = null;
         this.velocity = Vec3.ZERO;
         if (player != null) {
@@ -226,6 +238,7 @@ public class CameraController {
         this.cameraControl = false;
         this.uiHidden = false;
         this.followReady = false;
+        this.pathPreview = false;
         this.camera = null;
         this.velocity = Vec3.ZERO;
         this.target.clear();
@@ -261,6 +274,7 @@ public class CameraController {
 
     public void setMode(CameraMode newMode) {
         this.mode = newMode;
+        this.pathPreview = false;
         LocalPlayer player = Minecraft.getInstance().player;
         if (!this.active || player == null) {
             return;
@@ -291,6 +305,7 @@ public class CameraController {
         if (player == null) {
             return;
         }
+        this.pathPreview = false;
         Entity subject = this.target.resolve(player);
         if (this.mode == CameraMode.FOLLOW) {
             // In a chase rig recentering means "snap straight behind the back", not
@@ -437,6 +452,39 @@ public class CameraController {
     // Camera paths
     // ------------------------------------------------------------------
 
+    /**
+     * The frame an attached path is measured against: the subject's interpolated position and
+     * its body heading. Heads are ignored on purpose, because a glance sideways must not swing
+     * a whole flight path around.
+     */
+    public AnchorFrame anchorFrame() {
+        return this.anchorFrame(this.framePartial);
+    }
+
+    public AnchorFrame anchorFrame(float partialTick) {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) {
+            return AnchorFrame.NONE;
+        }
+        Entity subject = this.target.resolve(player);
+        if (subject == null) {
+            return AnchorFrame.NONE;
+        }
+        float partial = Mth.clamp(partialTick, 0.0F, 1.0F);
+        Vec3 origin = new Vec3(
+                Mth.lerp((double) partial, subject.xo, subject.getX()),
+                Mth.lerp((double) partial, subject.yo, subject.getY()),
+                Mth.lerp((double) partial, subject.zo, subject.getZ()));
+        return AnchorFrame.of(origin, anchorYaw(subject, partial));
+    }
+
+    private static float anchorYaw(Entity subject, float partial) {
+        if (subject instanceof LivingEntity living) {
+            return Mth.rotLerp(partial, living.yBodyRotO, living.yBodyRot);
+        }
+        return Mth.rotLerp(partial, subject.yRotO, subject.getYRot());
+    }
+
     /** Stores the current pose as a keyframe at the end of the path. */
     public void captureKeyframe() {
         LocalPlayer player = Minecraft.getInstance().player;
@@ -449,7 +497,7 @@ public class CameraController {
         }
         PathManager paths = PathManager.get();
         int index = paths.capture(this.position, this.yaw, this.pitch, this.roll,
-                this.currentFov(), this.settings.pathDefaultDuration);
+                this.currentFov(), this.settings.pathDefaultDuration, this.anchorFrame(1.0F));
         message(player, Component.translatable("cinecam.msg.keyframe.added",
                 index + 1, paths.path().size()));
     }
@@ -467,11 +515,13 @@ public class CameraController {
             this.start();
         }
         PathManager.get().stop();
+        CameraPath path = PathManager.get().path();
+        AnchorFrame frame = this.anchorFrame(1.0F);
         this.playbackFov = -1.0D;
-        this.position = keyframe.position;
+        this.position = path.worldPosition(keyframe.position, frame);
         this.prevPosition = this.position;
         this.velocity = Vec3.ZERO;
-        this.yaw = keyframe.yaw;
+        this.yaw = path.worldYaw(keyframe.yaw, frame);
         this.pitch = keyframe.pitch;
         this.roll = keyframe.roll;
         this.prevYaw = this.yaw;
@@ -483,6 +533,45 @@ public class CameraController {
             this.settings.fov = Mth.clamp(keyframe.fov, 10.0D, 130.0D);
         }
         this.adoptFollowRig(this.target.resolve(player));
+        this.pathPreview = true;
+        this.pushToEntity();
+    }
+
+    /**
+     * Parks the camera at an arbitrary time on the path. Dragging the timeline calls this on
+     * every mouse move, so the operator previews the shot instead of imagining it.
+     */
+    public void previewPath(double seconds) {
+        LocalPlayer player = Minecraft.getInstance().player;
+        if (player == null) {
+            return;
+        }
+        if (!this.active) {
+            this.start();
+        }
+        PathManager paths = PathManager.get();
+        paths.stop();
+        paths.seek(seconds);
+        PathSample sample = paths.sampleAt(paths.time(), this.anchorFrame(1.0F));
+        if (sample == null) {
+            return;
+        }
+        this.playbackFov = -1.0D;
+        this.position = sample.position();
+        this.prevPosition = this.position;
+        this.velocity = Vec3.ZERO;
+        this.yaw = sample.yaw();
+        this.pitch = sample.pitch();
+        this.roll = sample.roll();
+        this.prevYaw = this.yaw;
+        this.prevPitch = this.pitch;
+        this.prevRoll = this.roll;
+        this.targetYaw = this.yaw;
+        this.targetPitch = this.pitch;
+        if (this.settings.customFov) {
+            this.settings.fov = Mth.clamp(sample.fov(), 10.0D, 130.0D);
+        }
+        this.pathPreview = true;
         this.pushToEntity();
     }
 
@@ -506,8 +595,9 @@ public class CameraController {
         if (!paths.play()) {
             return;
         }
+        this.pathPreview = false;
         // Jump straight onto the first pose so the opening frame is already correct.
-        PathSample first = paths.path().sample(0.0D);
+        PathSample first = paths.sampleAt(0.0D, this.anchorFrame(1.0F));
         if (first != null) {
             this.position = first.position();
             this.prevPosition = this.position;
@@ -542,11 +632,13 @@ public class CameraController {
 
     /**
      * Playback owns the camera completely: position, angles, roll and field of view all come
-     * from the spline, so a take is identical every single time it is played.
+     * from the spline, so a take is identical every single time it is played. On an attached
+     * path the spline itself rides along with the subject, which is what makes a flyaround of a
+     * moving boat possible.
      */
     private void tickPlayback(LocalPlayer player) {
         PathManager paths = PathManager.get();
-        PathSample sample = paths.advance(this.settings.pathSpeed / 20.0D);
+        PathSample sample = paths.advance(this.settings.pathSpeed / 20.0D, this.anchorFrame(1.0F));
         if (sample == null) {
             this.playbackFov = -1.0D;
             return;
@@ -686,8 +778,12 @@ public class CameraController {
             }
         }
 
+        // Touching the controls takes the camera off a parked keyframe.
+        if (this.pathPreview && (forward != 0.0D || strafe != 0.0D || vertical != 0.0D)) {
+            this.pathPreview = false;
+        }
+
         float smoothing = Mth.clamp(this.settings.smoothing, 0.0F, 0.95F);
-        double moveAlpha = Math.max(0.05D, 1.0D - smoothing);
         double chaseAlpha = Math.max(0.06D, 1.0D - smoothing);
         double speed = this.settings.moveSpeed * (sprint ? 3.0D : 1.0D);
 
@@ -700,7 +796,17 @@ public class CameraController {
                 wish = raw.normalize().scale(speed);
             }
         }
+
+        // Pulling away and settling down are two different feelings, so they get two
+        // different ramps: a punchy start with a long soft stop is what an operator does on a
+        // real slider, and one shared "smoothing" number could never express it.
+        boolean braking = wish.lengthSqr() <= this.velocity.lengthSqr();
+        double moveAlpha = rampAlpha(braking ? this.settings.moveDecel : this.settings.moveAccel);
         this.velocity = this.velocity.add(wish.subtract(this.velocity).scale(moveAlpha));
+        if (wish.lengthSqr() < 1.0E-9D && this.velocity.lengthSqr() < 1.0E-6D) {
+            // Kill the last millimetre of drift so a locked off shot is genuinely locked off.
+            this.velocity = Vec3.ZERO;
+        }
 
         this.aimPoint = this.aimPointOf(subject);
 
@@ -827,6 +933,13 @@ public class CameraController {
     // Third person chase rig
     // ------------------------------------------------------------------
 
+    /** Keeps the chase pitch inside the operator's own up and down limits. */
+    private float clampFollowPitch(float pitch) {
+        float up = Mth.clamp(this.settings.followPitchUp, 0.0F, 85.0F);
+        float down = Mth.clamp(this.settings.followPitchDown, 0.0F, 85.0F);
+        return Mth.clamp(pitch, -down, up);
+    }
+
     /**
      * Tick half of the chase rig: keyboard input, the manual hold timer and the throttle
      * factor that drives both the look ahead and how briskly the camera straightens up.
@@ -848,7 +961,7 @@ public class CameraController {
             }
             if (vertical != 0.0D) {
                 // The keys move the resting height of the rig, the mouse only borrows it.
-                config.followPitch = Mth.clamp(config.followPitch - (float) (vertical * 1.5D), -80.0F, 80.0F);
+                config.followPitch = this.clampFollowPitch(config.followPitch - (float) (vertical * 1.5D));
             }
         }
 
@@ -877,7 +990,8 @@ public class CameraController {
      * tick it is handed.
      */
     public void updateFrame(float partialTick, float frameTicks) {
-        if (!this.active || this.camera == null || this.mode != CameraMode.FOLLOW) {
+        this.framePartial = Mth.clamp(partialTick, 0.0F, 1.0F);
+        if (!this.active || this.camera == null || this.mode != CameraMode.FOLLOW || this.pathPreview) {
             return;
         }
         Minecraft minecraft = Minecraft.getInstance();
@@ -893,7 +1007,7 @@ public class CameraController {
             this.resetFollowRig(subject);
         }
 
-        float partial = Mth.clamp(partialTick, 0.0F, 1.0F);
+        float partial = this.framePartial;
         float step = Mth.clamp(frameTicks, 0.0F, 5.0F);
         CameraSettings config = this.settings;
 
@@ -938,7 +1052,7 @@ public class CameraController {
         this.followLead += (wantedLead - this.followLead) * frameAlpha(0.09F, step);
 
         float yawTotal = Mth.wrapDegrees(this.rigYaw + this.orbitYaw);
-        float pitchTotal = Mth.clamp(config.followPitch + this.orbitPitch, -85.0F, 85.0F);
+        float pitchTotal = this.clampFollowPitch(config.followPitch + this.orbitPitch);
         Vec3 look = Vec3.directionFromRotation(pitchTotal, yawTotal);
         Vec3 side = Vec3.directionFromRotation(0.0F, yawTotal + 90.0F);
         Vec3 lead = Vec3.directionFromRotation(0.0F, this.rigYaw).scale(this.followLead);
@@ -1000,13 +1114,19 @@ public class CameraController {
         return true;
     }
 
-    /** Mouse look for the chase rig: a temporary offset from the subject's back. */
+    /**
+     * Mouse look for the chase rig: a temporary offset from the subject's back, kept inside
+     * the configured up and down limits so the view can never tip over the top or sink under
+     * the floor.
+     */
     private void applyOrbitInput(float deltaYaw, float deltaPitch) {
         float sensitivity = (float) Mth.clamp(this.settings.followSensitivity, 0.1D, 4.0D);
         this.orbitYaw = Mth.wrapDegrees(this.orbitYaw + deltaYaw * sensitivity);
-        float lower = -85.0F - this.settings.followPitch;
-        float upper = 85.0F - this.settings.followPitch;
-        this.orbitPitch = Mth.clamp(this.orbitPitch + deltaPitch * sensitivity, lower, upper);
+        float resting = this.clampFollowPitch(this.settings.followPitch);
+        float up = Mth.clamp(this.settings.followPitchUp, 0.0F, 85.0F);
+        float down = Mth.clamp(this.settings.followPitchDown, 0.0F, 85.0F);
+        this.orbitPitch = Mth.clamp(this.orbitPitch + deltaPitch * sensitivity,
+                -down - resting, up - resting);
         this.followManual = MANUAL_HOLD;
     }
 
@@ -1057,10 +1177,12 @@ public class CameraController {
         float worldYaw = (float) Math.toDegrees(Math.atan2(offset.x, -offset.z));
         float worldPitch = Mth.clamp(
                 (float) Math.toDegrees(Math.asin(Mth.clamp(offset.y / length, -1.0D, 1.0D))), -85.0F, 85.0F);
+        float resting = this.clampFollowPitch(this.settings.followPitch);
+        float up = Mth.clamp(this.settings.followPitchUp, 0.0F, 85.0F);
+        float down = Mth.clamp(this.settings.followPitchDown, 0.0F, 85.0F);
         this.rigYaw = this.subjectFacing(subject);
         this.orbitYaw = Mth.wrapDegrees(worldYaw - this.rigYaw);
-        this.orbitPitch = Mth.clamp(worldPitch - this.settings.followPitch,
-                -85.0F - this.settings.followPitch, 85.0F - this.settings.followPitch);
+        this.orbitPitch = Mth.clamp(worldPitch - resting, -down - resting, up - resting);
         this.settings.followDistance = Mth.clamp(length - followPadding(subject), 0.5D, 24.0D);
         this.followArm = length;
         this.followPivotY = anchor.y;
@@ -1085,9 +1207,9 @@ public class CameraController {
             float deltaYaw = Mth.wrapDegrees(player.getYRot() - this.frozenYaw);
             float deltaPitch = player.getXRot() - this.frozenPitch;
             if (deltaYaw != 0.0F || deltaPitch != 0.0F) {
-                // While a path plays the mouse must not touch the shot, but the player still
-                // has to be kept still.
-                if (!PathManager.get().isPlaying()) {
+                // While a path plays or the camera is parked on a keyframe the mouse must not
+                // touch the shot, but the player still has to be kept still.
+                if (!PathManager.get().isPlaying() && !this.pathPreview) {
                     if (this.mode == CameraMode.FOLLOW) {
                         // Normally already consumed for this frame by updateFrame().
                         this.applyOrbitInput(deltaYaw, deltaPitch);
@@ -1190,6 +1312,19 @@ public class CameraController {
         player.yHeadRotO = this.frozenYaw;
         player.yBodyRot = this.frozenYaw;
         player.yBodyRotO = this.frozenYaw;
+    }
+
+    /**
+     * Turns a ramp time in seconds into a per tick approach factor. The ramp is how long the
+     * camera takes to cover roughly ninety five percent of a speed change, which is the number
+     * an operator can actually feel and dial in.
+     */
+    private static double rampAlpha(double seconds) {
+        double clamped = Mth.clamp(seconds, 0.0D, 3.0D);
+        if (clamped <= 0.02D) {
+            return 1.0D;
+        }
+        return Mth.clamp(1.0D - Math.exp(-3.0D / (20.0D * clamped)), 0.02D, 1.0D);
     }
 
     /** Converts a per tick smoothing factor into one for a frame of the given length. */
